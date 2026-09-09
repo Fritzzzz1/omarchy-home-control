@@ -212,9 +212,14 @@ nothing.
 - **The phone page loads two libraries from jsdelivr** (`onnxruntime-web`,
   `@ricky0123/vad-web`) and a font from Google Fonts. With no internet, or a
   strict CSP, voice input does not work. They are not vendored.
-- **The phone UI still says "Home".** The branding in `app/index.html`,
-  `app/login.html`, `app/monitor.html` and `app/manifest.json` is not templated —
-  only the agent's persona (`voice-mode.md`) is. Rename them by hand if you care.
+- **The phone UI still says "Home" in the page titles.** `install.sh` asks
+  for a home-screen icon name now (`manifest.json`), same as it already asks
+  for the agent's persona — but the literal text in `app/index.html`,
+  `app/login.html` and `app/monitor.html` isn't templated yet. Rename it by
+  hand if you care.
+- **Tested on iPhone + Safari, on Omarchy.** That's the real test matrix —
+  not "should work elsewhere," just what's actually been run. More
+  platforms get added here when there are more testers, not before.
 - **English and Hebrew only.** Language is detected by counting Hebrew
   characters against a fixed 0.4 threshold, and there are exactly two voices.
 - **Cross-session delegation is off unless you ask for it**, and even when on,
