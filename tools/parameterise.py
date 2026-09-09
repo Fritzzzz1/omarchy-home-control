@@ -8,8 +8,8 @@ the original value as the fallback, so behaviour on the original machine is
 unchanged; it just becomes overridable.
 
 Run from the plugin root:  python3 tools/parameterise.py [--check]
-It is idempotent: a replacement whose target is already gone is reported as
-"already applied" rather than failing.
+It is idempotent: it looks for the post-state before the pre-state, so edits
+that wrap or extend what they match are not applied twice.
 """
 import pathlib
 import sys
@@ -21,6 +21,12 @@ CHECK = "--check" in sys.argv
 # (file, old, new, why)
 EDITS = [
     # ---- server.mjs ---------------------------------------------------------
+    (
+        "server.mjs",
+        "import { fileURLToPath } from 'node:url';",
+        "import { fileURLToPath } from 'node:url';\nimport { readBody } from './request-body.mjs';",
+        "bounded request handling lives in a small dedicated module",
+    ),
     (
         "server.mjs",
         "const ROOT = process.env.VOICE_ROOT || path.resolve(HERE, '..', '..', '..');",
@@ -80,6 +86,43 @@ EDITS = [
         'The text is an agent speaking to Liran: keep "I" for the agent and "you" for Liran exactly as written',
         'The text is an agent speaking to ${OWNER}: keep "I" for the agent and "you" for ${OWNER} exactly as written',
         "the owner's first name was baked into the speech-rewrite system prompt",
+    ),
+    (
+        "server.mjs",
+        "  'Bash(sqlite3:*)', 'Bash(python3:*)', 'Bash(node:*)', 'Bash(ffmpeg:*)', 'Bash(ffprobe:*)', 'Bash(curl:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',\n];",
+        "  'Bash(sqlite3:*)', 'Bash(python3:*)', 'Bash(node:*)', 'Bash(ffmpeg:*)', 'Bash(ffprobe:*)', 'Bash(curl:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',\n"
+        "];\n"
+        "// Handing work to another live Claude Code session on this machine. Opt-in, and\n"
+        "// off unless install.sh was explicitly told otherwise, because it widens who can\n"
+        "// act on a spoken request. The rule that goes with it is in voice-mode.md:\n"
+        "// lacking a tool is a reason to delegate; having been refused is not.\n"
+        "if ((process.env.VOICE_PEER_DELEGATION || '').toLowerCase() === 'on') {\n"
+        "  ALLOWED_TOOLS.push('ListAgents', 'SendMessage');\n"
+        "}",
+        "the tool allowlist is closed, so the delegation flag needs a way to widen it",
+    ),
+    (
+        "server.mjs",
+        "const readBody = (req, limit = 1e6) => new Promise((resolve) => {\n"
+        "  const chunks = [];\n"
+        "  let size = 0;\n"
+        "  req.on('data', (c) => { chunks.push(c); size += c.length; if (size > limit) req.destroy(); });\n"
+        "  req.on('end', () => resolve(Buffer.concat(chunks)));\n"
+        "});",
+        "// request-body.mjs owns bounded request reads.",
+        "an interrupted or oversized upload must settle instead of holding the voice turn busy",
+    ),
+    (
+        "server.mjs",
+        "    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') "
+        "return micChunk(req, res);",
+        "    // Awaited, not just returned: micChunk reads a bounded body that can reject when a\n"
+        "    // phone vanishes mid-chunk, and a returned promise settles outside this try — an\n"
+        "    // unhandled rejection that would take the whole voice server down with it.\n"
+        "    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') "
+        "return await micChunk(req, res);",
+        "now that a bounded read can reject, the only handler dispatched outside the "
+        "request try/catch has to be awaited inside it",
     ),
     # ---- monitor.mjs --------------------------------------------------------
     (
@@ -149,14 +192,17 @@ applied = skipped = missing = 0
 for name, old, new, why in EDITS:
     p = APP / name
     text = p.read_text()
-    if old in text:
+    # Check the post-state FIRST. Several edits wrap or extend the text they
+    # match, so `old` is still present after a successful apply; testing `old`
+    # first would re-apply those every run and duplicate declarations.
+    if new in text:
+        skipped += 1
+        print(f"  already  {name}: {why}")
+    elif old in text:
         if not CHECK:
             p.write_text(text.replace(old, new, 1))
         applied += 1
         print(f"  patched  {name}: {why}")
-    elif new.split("\n")[0] in text or new in text:
-        skipped += 1
-        print(f"  already  {name}: {why}")
     else:
         missing += 1
         print(f"  MISSING  {name}: could not find target for: {why}", file=sys.stderr)

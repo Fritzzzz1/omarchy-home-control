@@ -51,9 +51,21 @@ rm_path() {
 }
 
 # Read the config before deleting it: it is the only record of which port and
-# which directories this install used.
-# shellcheck disable=SC1090
-[[ -f $CONFIG_FILE ]] && set -a && . "$CONFIG_FILE" && set +a
+# which directories this install used. It is data, never shell code.
+load_config() {
+  [[ -f $CONFIG_FILE ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line || $line == \#* ]] && continue
+    [[ $line =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    case "$key" in
+      VOICE_PORT|VOICE_STATE|JARVIS_TAILNET_PORT|JARVIS_APP_DIR)
+        printf -v "$key" '%s' "$value" ;;
+    esac
+  done < "$CONFIG_FILE"
+}
+load_config
 VOICE_PORT="${VOICE_PORT:-4455}"
 JARVIS_TAILNET_PORT="${JARVIS_TAILNET_PORT:-8443}"
 

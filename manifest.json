@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Jarvis",
-    "description": "Shows whether the voice channel is up; click to open the phone URL, right-click to start or stop it.",
+    "description": "Shows whether the voice channel is up; click to open the phone URL, right-click to start it when it is down.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",

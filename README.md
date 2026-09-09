@@ -35,27 +35,26 @@ This is not a self-contained app. It needs, on the machine you install it on:
 | **the `claude` CLI**, logged in | the agent is Claude Code | install refuses |
 | **python3** | builds the venv for `edge-tts` | install refuses |
 | **jq**, **curl** | used by `jarvis-voice-ctl` and the widget | install refuses |
-| **a whisper endpoint** | transcription | **install refuses — see below** |
+| **a whisper endpoint or local model** | transcription | **install refuses — see below** |
 | **tailscale** | reaching it from a phone | install skips the serve step; you are LAN-only |
 | **mpv** or **ffplay** | playing replies on the machine's own speakers | replies still go to the phone |
 | **PulseAudio/PipeWire** | only for the optional phone-as-microphone sink | that one feature is dead |
 
 ### The whisper endpoint is not included
 
-`--whisper-url` is required and there is no default, because there is no honest
-one. This app runs **no local speech model**. It POSTs audio to a
-`whisper.cpp` `whisper-server` and expects `/inference` to answer.
+Choose one transcription setup. The app POSTs audio to a `whisper.cpp`
+`whisper-server` and expects `/inference` to answer.
 
 You have two options:
 
 - **Point it at another machine.** This is what the original deployment does: a
   Mac mini on the same tailnet runs `whisper-server`, and the round trip costs
   about 25 ms more than doing it locally. `--whisper-url http://<host>:4458`
-- **Run one locally.** Install `whisper.cpp`, put a model at
-  `~/.local/share/jarvis-voice/models/ggml-large-v3-turbo.bin` (or set
-  `WHISPER_MODEL`), and pass `--whisper-url http://127.0.0.1:4456`. The code can
-  also spawn `whisper-server` itself if `WHISPER_URL` is left empty in the
-  config afterwards — that path is present but is not what the installer sets up.
+- **Run one locally.** Install `whisper.cpp` so `whisper-server` is on `PATH`,
+  download a compatible model yourself, then use
+  `--whisper-model /path/to/ggml-model.bin`. Jarvis starts it on demand and
+  keeps the model warm. The installer validates the binary and model path; it
+  does not download either one.
 
 If the endpoint is down, voice input stops and the phone page falls back to
 typing. That is by design, not a crash.
@@ -65,6 +64,7 @@ typing. That is by design, not a crash.
     git clone <this repo> && cd omarchy-jarvis
     ./install.sh --dry-run --whisper-url http://10.0.0.5:4458   # see every change first
     ./install.sh           --whisper-url http://10.0.0.5:4458
+    # or: ./install.sh --whisper-model ~/.local/share/whisper/ggml-model.bin
 
 `--dry-run` prints every file it would write and every command it would run.
 Read it once; it is short.
@@ -85,7 +85,7 @@ mapping, which belongs to your tailscale login.
 | `loginctl enable-linger $USER` | so it survives logout and reboot |
 | `tailscale serve --https 8443 → 127.0.0.1:4455` | tailnet-only HTTPS. **Not** Funnel |
 | the app's `tts.py` shebang | rewritten to the venv's python |
-| the app's `voice-mode.md` | rendered with your name and the agent's name |
+| the app's `voice-mode.md` | rendered with your name, the agent's name, and the delegation rule |
 
 It **refuses** to install if the unit is already running, or if the port is
 already in use — installing over a live voice channel would cut off whoever is
@@ -101,7 +101,8 @@ never removes node/claude/tailscale.
 
 ## Configuration
 
-Everything lives in `~/.config/jarvis-voice/config.env`. Edit it, then
+Everything lives in `~/.config/jarvis-voice/config.env`. It is a plain
+`KEY=VALUE` data file, not a shell script; values may contain spaces. Edit it, then
 `systemctl --user restart jarvis-voice` — **not while somebody is talking**.
 
 | Variable | Default | What |
@@ -113,15 +114,66 @@ Everything lives in `~/.config/jarvis-voice/config.env`. Edit it, then
 | `VOICE_PORT` | `4455` | local HTTP port (bound to 127.0.0.1) |
 | `VOICE_HOST` | `127.0.0.1` | bind address. Changing this exposes the app; don't |
 | `TTS_PORT` | `4457` | the edge-tts worker |
-| `WHISPER_URL` | *(required)* | transcription endpoint |
-| `WHISPER_MODEL` | `~/.local/share/jarvis-voice/models/…` | only used if a local whisper is spawned |
+| `WHISPER_URL` | *(empty for local)* | remote transcription endpoint |
+| `WHISPER_MODEL` | *(empty for remote)* | local model; starts `whisper-server` on demand |
 | `VOICE_LOCAL_PLAYER` | `mpv` | or `ffplay`. Plays replies on this machine too |
 | `VOICE_OWNER` | your name | who the agent thinks it is talking to |
 | `VOICE_EDGE_TTS` | `<venv>/bin/edge-tts` | fallback when the warm worker is down |
+| `VOICE_PEER_DELEGATION` | `off` | may the agent hand work to another live Claude Code session? See below |
 | `VOICE_VOICE_EN` / `VOICE_VOICE_HE` | Andrew / Avri | edge-tts voices |
 | `VOICE_MODEL`, `VOICE_EFFORT` | CLI defaults | `low` effort reaches the first sentence sooner |
 | `VOICE_REWRITE_MODEL` | a Haiku model | rewrites page-shaped replies for the ear |
 | `JARVIS_TAILNET_HOST` / `_PORT` | from tailscale / `8443` | used to print and open the phone URL |
+
+## Cross-session delegation (Claude Code only)
+
+`install.sh` asks one question, and the default answer is no:
+
+> May the voice agent use `ListAgents` to find another live Claude Code session
+> on this machine, and hand it work?
+
+It is useful when something spoken into the phone needs a tool this conversation
+does not have and another session does. It is never enabled silently — you are
+asked, or you pass `--peer-delegation on|off`, and a non-interactive install
+leaves it off.
+
+`ListAgents` and `SendMessage` are **Claude Code's own tools**. If the agent
+here is not Claude Code, or the CLI does not offer them, the flag does nothing
+at all; the installer skips the question entirely when there is no `claude` on
+PATH.
+
+### The rule that comes with it
+
+This is the part that matters, and the agent is told it either way:
+
+> **A missing tool is a reason to delegate. A denied action is not.**
+
+Delegating because this conversation *lacks a tool* is legitimate — the work
+needs something this session cannot do, and a peer can.
+
+Delegating because you *denied* something, or because the agent expects its own
+permissions would block it, is not. Permission boundaries are **per session**. A
+peer session acting on the agent's behalf does not inherit your consent; it
+steps around a decision you already made. Work that was refused goes back to
+you — never sideways to another agent.
+
+That distinction is the whole difference between a useful capability and a hole,
+so it is written into the setup prompt, into this README, and into the agent's
+own instructions rather than being left implied.
+
+### Changing or revoking it
+
+    ~/.config/jarvis-voice/config.env      ->  VOICE_PEER_DELEGATION=off
+    systemctl --user restart jarvis-voice  # not while somebody is talking
+
+Setting it to `off` removes `ListAgents` and `SendMessage` from the tools the
+agent is allowed to use, so the capability is gone, not merely discouraged.
+
+One caveat worth knowing: the flag controls the *tools*, but the matching
+wording in `voice-mode.md` is rendered once at install time. Flip the flag by
+hand and the agent loses (or gains) the tools immediately, while its written
+instructions still describe the old state. Re-run `install.sh` to bring the two
+back into step.
 
 ## Day to day
 
@@ -165,6 +217,11 @@ nothing.
   only the agent's persona (`voice-mode.md`) is. Rename them by hand if you care.
 - **English and Hebrew only.** Language is detected by counting Hebrew
   characters against a fixed 0.4 threshold, and there are exactly two voices.
+- **Cross-session delegation is off unless you ask for it**, and even when on,
+  the agent is told that a refusal must come back to you rather than go
+  sideways to a peer session. That is an instruction, not an enforcement
+  mechanism — the tools are gated by the flag, but the *rule* about when to
+  use them rests on the agent following it.
 - **The agent is not sandboxed.** It runs with `--permission-mode acceptEdits`
   and can read, search, edit and write anywhere under `VOICE_ROOT`. There is a
   deny list for `secrets/`, `credentials*` and `.env*`, and that is the whole of

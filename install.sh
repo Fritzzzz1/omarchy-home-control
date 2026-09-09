@@ -23,6 +23,7 @@ LABEL="$(hostname -s 2>/dev/null || echo voice)"
 VOICE_PORT=4455
 TTS_PORT=4457
 WHISPER_URL=""
+WHISPER_MODEL=""
 VOICE_ROOT="$HOME/dev"
 APP_DIR="$DATA_HOME/jarvis-voice/app"
 STATE_DIR=""            # defaults to $DATA_HOME/jarvis-voice/state/<label>
@@ -33,6 +34,7 @@ LOCAL_PLAYER="mpv"
 NODE_BIN=""
 OWNER=""                # who the agent is talking to; default: your full name, else $USER
 AGENT_NAME="Jarvis"     # what the agent answers to
+PEER_DELEGATION=""      # "" = ask when interactive; on | off set it outright
 DO_SERVE=1
 DO_ENABLE=1
 DO_VENV=1
@@ -61,7 +63,8 @@ usage() {
 
 Usage: ./install.sh [options]
 
-  --whisper-url URL     transcription endpoint (required; e.g. http://10.0.0.5:4458)
+  --whisper-url URL     remote transcription endpoint (e.g. http://10.0.0.5:4458)
+  --whisper-model PATH  local Whisper model; requires whisper-server on PATH
   --label NAME          instance label, also the state subdirectory  [$LABEL]
   --voice-root DIR      the folder the agent gets as its cwd         [$VOICE_ROOT]
   --port N              local HTTP port                              [$VOICE_PORT]
@@ -73,6 +76,12 @@ Usage: ./install.sh [options]
   --player CMD          local playback command, mpv or ffplay        [$LOCAL_PLAYER]
   --owner NAME          the name the agent calls you by              [your login name]
   --agent NAME          the name the agent answers to                [$AGENT_NAME]
+  --peer-delegation on|off
+                        may the agent hand work to another live Claude Code
+                        session on this machine? Default OFF. Omit and the
+                        installer asks; a non-interactive run leaves it off.
+  Supply exactly one of --whisper-url or --whisper-model.
+
   --tailnet-host HOST   MagicDNS name (default: asked of tailscale)
   --tailnet-port N      port for tailscale serve                     [$TAILNET_PORT]
   --no-serve            do not touch the tailscale serve config
@@ -86,6 +95,7 @@ USAGE
 while (( $# )); do
   case "$1" in
   --whisper-url) WHISPER_URL="$2"; shift 2 ;;
+  --whisper-model) WHISPER_MODEL="$2"; shift 2 ;;
   --label) LABEL="$2"; shift 2 ;;
   --voice-root) VOICE_ROOT="$2"; shift 2 ;;
   --port) VOICE_PORT="$2"; shift 2 ;;
@@ -97,6 +107,10 @@ while (( $# )); do
   --player) LOCAL_PLAYER="$2"; shift 2 ;;
   --owner) OWNER="$2"; shift 2 ;;
   --agent) AGENT_NAME="$2"; shift 2 ;;
+  --peer-delegation)
+    case "$2" in on | off) PEER_DELEGATION="$2" ;; *) die "--peer-delegation takes 'on' or 'off'" ;; esac
+    shift 2
+    ;;
   --tailnet-host) TAILNET_HOST="$2"; shift 2 ;;
   --tailnet-port) TAILNET_PORT="$2"; shift 2 ;;
   --no-serve) DO_SERVE=0; shift ;;
@@ -118,9 +132,17 @@ fi
 # --- preflight ----------------------------------------------------------------
 step "Checking what this machine already has"
 
-[[ -n $WHISPER_URL ]] || die "--whisper-url is required. Jarvis does not transcribe locally;
-       it posts audio to a whisper-server endpoint you already run somewhere
-       reachable (another machine on your tailnet, or localhost)."
+if [[ -n $WHISPER_URL && -n $WHISPER_MODEL ]]; then
+  die "choose either --whisper-url or --whisper-model, not both"
+elif [[ -z $WHISPER_URL && -z $WHISPER_MODEL ]]; then
+  die "choose --whisper-url for a remote endpoint or --whisper-model for local transcription"
+elif [[ -n $WHISPER_MODEL ]]; then
+  [[ -f $WHISPER_MODEL ]] || die "local Whisper model not found: $WHISPER_MODEL"
+  command -v whisper-server >/dev/null || die "--whisper-model needs whisper-server on PATH"
+  note "whisper     local model $WHISPER_MODEL"
+else
+  note "whisper     remote endpoint $WHISPER_URL"
+fi
 
 if [[ -z $NODE_BIN ]]; then
   # Prefer the mise *shim* over a versioned install path, so a node upgrade does
@@ -137,7 +159,7 @@ command -v python3 >/dev/null || die "python3 is required to build the edge-tts 
 command -v curl >/dev/null || die "curl is required"
 command -v jq >/dev/null || die "jq is required (the bar widget and jarvis-voice-ctl use it)"
 
-if systemctl --user is-active --quiet "$UNIT_NAME" && (( ! FORCE )) && (( ! DRY_RUN )); then
+if systemctl --user is-active --quiet "$UNIT_NAME" >/dev/null 2>&1 && (( ! FORCE )) && (( ! DRY_RUN )); then
   die "$UNIT_NAME is already running. Installing over it would restart it and cut off
        any conversation in progress. Re-run with --force when nobody is on the line."
 fi
@@ -163,6 +185,53 @@ for p in "$VOICE_PORT" "$TTS_PORT"; do
     fi
   fi
 done
+
+# --- one question, asked out loud -------------------------------------------
+# Claude Code can list the other live sessions on this machine and pass one of
+# them a job. That is useful and it widens who can act on something spoken into a
+# phone, so it is asked for rather than assumed. ListAgents and SendMessage are
+# Claude Code's own tools: if this machine's agent is not Claude Code, or the CLI
+# does not offer them, the flag simply does nothing.
+if [[ -z $PEER_DELEGATION ]]; then
+  if ! command -v claude >/dev/null; then
+    PEER_DELEGATION=off   # no Claude, no such tools; do not ask a confusing question
+  elif (( DRY_RUN )); then
+    PEER_DELEGATION=off
+    note "cross-session delegation: would ask here; --dry-run assumes 'off'"
+  elif [[ -t 0 && -t 1 ]]; then
+    cat <<'ASK'
+
+  ── Cross-session delegation (Claude Code only) ─────────────────────────
+
+  May the voice agent use ListAgents to find another live Claude Code
+  session on this machine, and hand it work?
+
+  Useful when a spoken request needs a tool this conversation does not
+  have, and another session does.
+
+  The rule that comes with it, which is written into the agent's
+  instructions either way:
+
+    A missing tool is a reason to delegate.
+    A denied action is NOT.
+
+  If you refuse something, the agent must bring it back to you - not ask
+  a peer session to do it instead. Permission boundaries are per-session,
+  and a peer acting on its behalf steps around a decision you already
+  made. Refused work goes back to you, never sideways.
+
+  Default is no. You can change this later in config.env.
+
+ASK
+    read -r -p "  Allow cross-session delegation? [y/N] " _ans
+    [[ $_ans == [yY]* ]] && PEER_DELEGATION=on || PEER_DELEGATION=off
+    echo
+  else
+    PEER_DELEGATION=off
+    note "cross-session delegation: left off (not an interactive install)"
+  fi
+fi
+note "cross-session delegation: $PEER_DELEGATION"
 
 if (( DO_SERVE )); then
   if command -v tailscale >/dev/null; then
@@ -219,9 +288,16 @@ step "2b. Rendering the voice persona (owner: $OWNER, agent: $AGENT_NAME)"
 if (( DRY_RUN )); then
   note "would render $APP_DIR/voice-mode.md from voice-mode.md.in"
 else
-  sed -e "s|__OWNER__|$OWNER|g" -e "s|__AGENT__|$AGENT_NAME|g" -e "s|__LABEL__|$LABEL|g" \
-    "$PLUGIN_DIR/app/voice-mode.md.in" >"$APP_DIR/voice-mode.md"
+  # Splice in whichever delegation guidance matches the answer above, then
+  # substitute the names. The agent is told the rule in both cases - when the
+  # capability is off it is told plainly that it is off and why.
+  _block="$PLUGIN_DIR/app/delegation.$PEER_DELEGATION.md"
+  sed -e "/__DELEGATION_BLOCK__/r $_block" -e "/__DELEGATION_BLOCK__/d" \
+    "$PLUGIN_DIR/app/voice-mode.md.in" \
+    | sed -e "s|__OWNER__|$OWNER|g" -e "s|__AGENT__|$AGENT_NAME|g" -e "s|__LABEL__|$LABEL|g" \
+    >"$APP_DIR/voice-mode.md"
   note "$APP_DIR/voice-mode.md — edit it to change how the agent speaks"
+  note "delegation guidance: $(basename "$_block")"
 fi
 
 # --- 3. state -----------------------------------------------------------------
@@ -234,7 +310,8 @@ note "it is never deleted by uninstall unless you pass --purge"
 step "4. Config $CONFIG_FILE"
 write_file "$CONFIG_FILE" <<EOF
 # Jarvis — every machine-specific value, in one file.
-# Read by the systemd unit (EnvironmentFile) and by jarvis-voice-ctl.
+# Read by the systemd unit (EnvironmentFile) and by jarvis-voice-ctl. This is
+# data, not a shell script: each value is everything after its first '='.
 # Edit, then: systemctl --user restart $UNIT_NAME   (not while someone is talking)
 
 # Where the agent runs. This is the folder Jarvis can read, search and edit.
@@ -247,8 +324,10 @@ VOICE_TOKEN=$STATE_DIR/voice-token
 VOICE_PORT=$VOICE_PORT
 TTS_PORT=$TTS_PORT
 
-# Transcription. Jarvis runs no local model; this endpoint does the work.
+# Transcription. Set exactly one: a remote whisper-server endpoint, or a local
+# model. With a local model, server.mjs starts whisper-server on demand.
 WHISPER_URL=$WHISPER_URL
+WHISPER_MODEL=$WHISPER_MODEL
 
 # Local playback of replies on this machine's own speakers (mpv or ffplay).
 VOICE_LOCAL_PLAYER=$LOCAL_PLAYER
@@ -259,6 +338,13 @@ VOICE_OWNER=$OWNER
 
 # The edge-tts CLI, used only as a fallback when the warm TTS worker is down.
 VOICE_EDGE_TTS=$VENV_DIR/bin/edge-tts
+
+# May the agent hand work to another live Claude Code session on this machine?
+# "on" adds ListAgents and SendMessage to the tools it is allowed to use.
+# Change it here and restart the service; the agent's instructions in
+# voice-mode.md are rendered at install time, so re-run install.sh to keep the
+# two in step. A missing tool is a reason to delegate; a denied action is not.
+VOICE_PEER_DELEGATION=$PEER_DELEGATION
 
 # Optional: pin the model / thinking effort. Unset = the claude CLI's defaults.
 #VOICE_MODEL=

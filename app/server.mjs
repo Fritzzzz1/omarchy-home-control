@@ -9,6 +9,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readBody } from './request-body.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
@@ -35,6 +36,13 @@ const ALLOWED_TOOLS = [
   'Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(date:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(find:*)', 'Bash(grep:*)',
   'Bash(sqlite3:*)', 'Bash(python3:*)', 'Bash(node:*)', 'Bash(ffmpeg:*)', 'Bash(ffprobe:*)', 'Bash(curl:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
 ];
+// Handing work to another live Claude Code session on this machine. Opt-in, and
+// off unless install.sh was explicitly told otherwise, because it widens who can
+// act on a spoken request. The rule that goes with it is in voice-mode.md:
+// lacking a tool is a reason to delegate; having been refused is not.
+if ((process.env.VOICE_PEER_DELEGATION || '').toLowerCase() === 'on') {
+  ALLOWED_TOOLS.push('ListAgents', 'SendMessage');
+}
 const PERMISSION_SETTINGS = JSON.stringify({
   permissions: {
     deny: [
@@ -62,12 +70,7 @@ const readJson = (file, fallback) => {
 };
 const writeJson = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2));
 const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-const readBody = (req, limit = 1e6) => new Promise((resolve) => {
-  const chunks = [];
-  let size = 0;
-  req.on('data', (c) => { chunks.push(c); size += c.length; if (size > limit) req.destroy(); });
-  req.on('end', () => resolve(Buffer.concat(chunks)));
-});
+// request-body.mjs owns bounded request reads.
 const parseCookies = (req) => Object.fromEntries(
   (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]),
 );
@@ -268,7 +271,7 @@ const HALLUCINATIONS = /^(you\.?|subtitles by .*|תרגום .*|כתוביות .*
 const whisperReady = async (onStage) => {
   if (!WHISPER_URL && !whisper) { startWhisper(); onStage?.('loading the ear (Whisper)'); }
   for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${WHISPER_BASE()}/`, { method: 'GET' }); if (r.ok || r.status === 404 || r.status === 405) return; } catch {}
+    try { const r = await fetch(`${WHISPER_BASE()}/`, { method: 'GET', signal: AbortSignal.timeout(2000) }); if (r.ok || r.status === 404 || r.status === 405) return; } catch {}
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error('whisper did not come up');
@@ -279,7 +282,7 @@ const transcribe = async (wav, onStage) => {
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
   form.append('response_format', 'json');
   form.append('temperature', '0');
-  const res = await fetch(`${WHISPER_BASE()}/inference`, { method: 'POST', body: form });
+  const res = await fetch(`${WHISPER_BASE()}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error(`whisper ${res.status}`);
   const text = String((await res.json()).text || '').replace(/\s+/g, ' ').trim();
   return HALLUCINATIONS.test(text) ? '' : text;
@@ -299,7 +302,7 @@ const startTts = () => {
   ttsWorker.on('exit', (code) => { log(`tts worker exited ${code}`); ttsWorker = null; });
 };
 process.on('exit', () => ttsWorker?.kill());
-const warmTts = (lang) => { if (!ttsWorker) return; fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }) }).catch(() => {}); };
+const warmTts = (lang) => { if (!ttsWorker) return; fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }), signal: AbortSignal.timeout(10000) }).catch(() => {}); };
 setInterval(() => { if (Date.now() - lastTurnAt < IDLE.ttsWarmMs) { warmTts('en'); warmTts('he'); } }, 45000);
 setInterval(() => {
   if (busy || !lastTurnAt) return;
@@ -375,7 +378,7 @@ const speak = async (text, lang = hebrewShare(text) > 0.4 ? 'he' : 'en') => {
   let done = false;
   if (ttsWorker) {
     try {
-      const res = await fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }) });
+      const res = await fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }), signal: AbortSignal.timeout(30000) });
       if (res.ok) { fs.writeFileSync(out, Buffer.from(await res.arrayBuffer())); done = true; }
       else log(`tts worker ${res.status}: ${(await res.text()).slice(0, 120)} — falling back to the cli`);
     } catch (e) { log(`tts worker unreachable (${e.message}) — falling back to the cli`); }
@@ -572,7 +575,10 @@ const server = http.createServer(async (req, res) => {
       startMic(body.rate);
       return json(res, 200, { ok: true, sink: MIC_SINK });
     }
-    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') return micChunk(req, res);
+    // Awaited, not just returned: micChunk reads a bounded body that can reject when a
+    // phone vanishes mid-chunk, and a returned promise settles outside this try — an
+    // unhandled rejection that would take the whole voice server down with it.
+    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') return await micChunk(req, res);
     if (url.pathname === '/api/mic-stop' && req.method === 'POST') { stopMic(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }

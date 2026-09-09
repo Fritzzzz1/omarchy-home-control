@@ -52,7 +52,7 @@
 
   .card{background:var(--panel);border:1px solid var(--line);
     border-radius:9px;padding:16px 18px}
-  .card p{margin:0;font-size:14px}
+  .card p{margin:0;font-size:14px;max-width:none}  /* the card is the measure */
   .card p + p{margin-top:8px}
   .card.accent{border-left:2px solid var(--accent)}
   .card.warnb{border-left:2px solid var(--warn)}
@@ -501,6 +501,67 @@ docs/pitch.html        <span class="c">this file</span></pre>
 <!-- 8 -->
 <section>
   <div class="wrap">
+    <p class="kicker">Boundaries</p>
+    <h2>One capability, and the line under it</h2>
+    <p class="lead">Setup asks exactly one question, and the default answer is no.</p>
+    <div class="grid g2">
+      <div class="card accent">
+        <h3><span class="tag un">opt-in · default off</span> The question</h3>
+        <p>May the agent use <span class="mono">ListAgents</span> to find another
+          live Claude Code session on this machine, and hand it work this
+          conversation lacks the tools for?</p>
+        <p>Never enabled silently. Asked aloud, or set with
+          <span class="mono">--peer-delegation on|off</span>; a non-interactive
+          install leaves it off. Recorded as a plain flag,
+          <span class="mono">VOICE_PEER_DELEGATION</span>, in
+          <span class="mono">config.env</span> — inspectable and revocable.</p>
+        <p><span class="mono">ListAgents</span> and
+          <span class="mono">SendMessage</span> are Claude Code's own tools, so the
+          installer skips the question entirely when there is no
+          <span class="mono">claude</span> on PATH rather than asking something
+          meaningless.</p>
+      </div>
+      <div class="card goodb">
+        <h3>Off is a gate, not a preference</h3>
+        <p>The voice server passes a <strong>closed</strong>
+          <span class="mono">--allowedTools</span> allowlist. So the flag does real
+          work: <span class="mono">on</span> appends
+          <span class="mono">ListAgents</span> and
+          <span class="mono">SendMessage</span> to it,
+          <span class="mono">off</span> leaves them absent and the agent simply
+          cannot reach them.</p>
+        <p>Worth saying plainly: prose in the persona file alone would have
+          achieved nothing here. That is why this landed as a 20th entry in
+          <span class="mono">parameterise.py</span> rather than a paragraph.</p>
+      </div>
+    </div>
+    <div class="card badb" style="margin-top:16px">
+      <h3>The rule, written down rather than implied</h3>
+      <p style="font-size:16px;color:var(--fg)"><strong>A missing tool is a reason
+        to delegate. A denied action is not.</strong></p>
+      <p>Delegating because this conversation <em>lacks a tool</em> is legitimate —
+        the work needs something this session cannot do, and a peer can.
+        Delegating because you <em>refused</em> something, or because the agent
+        expects its own permissions would block it, is not. Permission boundaries
+        are per-session: a peer acting on the agent's behalf does not inherit your
+        consent, it steps around a decision you already made. Work that was refused
+        goes back to you, never sideways to another agent.</p>
+      <p>It is in the setup prompt, the README, and the agent's own instructions —
+        in the <span class="mono">off</span> case too, where it is told plainly
+        that it may not, and why. <span style="color:var(--faint)">Honest about the
+        reach: the flag gates the tools; <em>when</em> to use them rests on the
+        agent following the rule. And the wording is rendered at install time, so
+        flipping the flag by hand changes the tools at once while the written
+        instructions still describe the old state — re-run
+        <span class="mono">install.sh</span> to resync.</span></p>
+    </div>
+  </div>
+  <div class="num">08</div>
+</section>
+
+<!-- 10 -->
+<section>
+  <div class="wrap">
     <p class="kicker">Compatibility</p>
     <h2>What a second machine actually needs</h2>
     <div class="grid g2">
@@ -561,10 +622,10 @@ docs/pitch.html        <span class="c">this file</span></pre>
       </div>
     </div>
   </div>
-  <div class="num">08</div>
+  <div class="num">09</div>
 </section>
 
-<!-- 9 -->
+<!-- 10 -->
 <section>
   <div class="wrap">
     <p class="kicker">Decision</p>
@@ -617,10 +678,10 @@ docs/pitch.html        <span class="c">this file</span></pre>
       </div>
     </div>
   </div>
-  <div class="num">09</div>
+  <div class="num">10</div>
 </section>
 
-<div class="hint" id="hint">↓ / space · 9 slides</div>
+<div class="hint" id="hint">↓ / space · 10 slides</div>
 
 <script>
   const secs = [...document.querySelectorAll('section')];
