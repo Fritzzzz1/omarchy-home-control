@@ -34,6 +34,7 @@ LOCAL_PLAYER="mpv"
 NODE_BIN=""
 OWNER=""                # who the agent is talking to; default: your full name, else $USER
 AGENT_NAME="Home Control"     # what the agent answers to
+PWA_NAME=""              # "" = ask when interactive; the home-screen icon's label
 PEER_DELEGATION=""      # "" = ask when interactive; on | off set it outright
 DO_SERVE=1
 DO_ENABLE=1
@@ -76,6 +77,7 @@ Usage: ./install.sh [options]
   --player CMD          local playback command, mpv or ffplay        [$LOCAL_PLAYER]
   --owner NAME          the name the agent calls you by              [your login name]
   --agent NAME          the name the agent answers to                [$AGENT_NAME]
+  --pwa-name NAME       label under the home-screen icon              [asks; suggests "Home" or the label]
   --peer-delegation on|off
                         may the agent hand work to another live Claude Code
                         session on this machine? Default OFF. Omit and the
@@ -107,6 +109,7 @@ while (( $# )); do
   --player) LOCAL_PLAYER="$2"; shift 2 ;;
   --owner) OWNER="$2"; shift 2 ;;
   --agent) AGENT_NAME="$2"; shift 2 ;;
+  --pwa-name) PWA_NAME="$2"; shift 2 ;;
   --peer-delegation)
     case "$2" in on | off) PEER_DELEGATION="$2" ;; *) die "--peer-delegation takes 'on' or 'off'" ;; esac
     shift 2
@@ -233,6 +236,18 @@ ASK
 fi
 note "cross-session delegation: $PEER_DELEGATION"
 
+# The home-screen icon's label ships as "Home" if nobody's asked - fine for one
+# instance, ambiguous the moment there's a second one on your phone.
+if [[ -z $PWA_NAME ]]; then
+  if [[ -t 0 && -t 1 ]] && (( ! DRY_RUN )); then
+    read -r -p "  Name for the home-screen icon [Home, or type \"$LABEL\"]: " _pwa
+    PWA_NAME="${_pwa:-Home}"
+  else
+    PWA_NAME="Home"
+  fi
+fi
+note "home-screen icon: $PWA_NAME"
+
 if (( DO_SERVE )); then
   if command -v tailscale >/dev/null; then
     if [[ -z $TAILNET_HOST ]]; then
@@ -298,6 +313,18 @@ else
     >"$APP_DIR/voice-mode.md"
   note "$APP_DIR/voice-mode.md — edit it to change how the agent speaks"
   note "delegation guidance: $(basename "$_block")"
+fi
+
+# The PWA manifest names the home-screen icon; it is rendered per install for
+# the same reason voice-mode.md is - "Home" baked in is wrong the moment a
+# second machine on the same phone also wants to be called Home.
+step "2c. Naming the home-screen icon ($PWA_NAME)"
+if (( DRY_RUN )); then
+  note "would render $APP_DIR/manifest.json from manifest.json.in"
+else
+  sed -e "s|__PWA_NAME__|$PWA_NAME|g" -e "s|__LABEL__|$LABEL|g" \
+    "$PLUGIN_DIR/app/manifest.json.in" \
+    >"$APP_DIR/manifest.json"
 fi
 
 # --- 3. state -----------------------------------------------------------------

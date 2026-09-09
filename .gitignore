@@ -1,3 +1,5 @@
 node_modules/
 *.log
 __pycache__/
+app/voice-mode.md
+app/manifest.json

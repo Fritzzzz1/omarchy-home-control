@@ -12,8 +12,11 @@ SRC="$(cd "$SRC" && pwd)"
 [[ -f $SRC/server.mjs ]] || { echo "no server.mjs in $SRC" >&2; exit 1; }
 
 FILES=(index.html login.html mic.html monitor.html monitor.mjs server.mjs tts.py
-  voice-mode.md manifest.json favicon-32.png icon-192.png icon-512.png
+  voice-mode.md favicon-32.png icon-192.png icon-512.png
   apple-touch-icon.png icon-source.svg)
+# manifest.json is deliberately absent: like voice-mode.md.in, the PWA manifest
+# is now a hand-maintained template (app/manifest.json.in) rendered by install.sh
+# per machine, not vendored from source.
 
 echo "Vendoring from $SRC"
 for f in "${FILES[@]}"; do
