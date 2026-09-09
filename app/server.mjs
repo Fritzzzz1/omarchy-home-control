@@ -271,7 +271,7 @@ const HALLUCINATIONS = /^(you\.?|subtitles by .*|תרגום .*|כתוביות .*
 const whisperReady = async (onStage) => {
   if (!WHISPER_URL && !whisper) { startWhisper(); onStage?.('loading the ear (Whisper)'); }
   for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${WHISPER_BASE()}/`, { method: 'GET', signal: AbortSignal.timeout(2000) }); if (r.ok || r.status === 404 || r.status === 405) return; } catch {}
+    try { const r = await fetch(`${WHISPER_BASE()}/`, { method: 'GET' }); if (r.ok || r.status === 404 || r.status === 405) return; } catch {}
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error('whisper did not come up');
@@ -282,7 +282,7 @@ const transcribe = async (wav, onStage) => {
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
   form.append('response_format', 'json');
   form.append('temperature', '0');
-  const res = await fetch(`${WHISPER_BASE()}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
+  const res = await fetch(`${WHISPER_BASE()}/inference`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`whisper ${res.status}`);
   const text = String((await res.json()).text || '').replace(/\s+/g, ' ').trim();
   return HALLUCINATIONS.test(text) ? '' : text;
@@ -302,7 +302,7 @@ const startTts = () => {
   ttsWorker.on('exit', (code) => { log(`tts worker exited ${code}`); ttsWorker = null; });
 };
 process.on('exit', () => ttsWorker?.kill());
-const warmTts = (lang) => { if (!ttsWorker) return; fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }), signal: AbortSignal.timeout(10000) }).catch(() => {}); };
+const warmTts = (lang) => { if (!ttsWorker) return; fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }) }).catch(() => {}); };
 setInterval(() => { if (Date.now() - lastTurnAt < IDLE.ttsWarmMs) { warmTts('en'); warmTts('he'); } }, 45000);
 setInterval(() => {
   if (busy || !lastTurnAt) return;
@@ -378,7 +378,7 @@ const speak = async (text, lang = hebrewShare(text) > 0.4 ? 'he' : 'en') => {
   let done = false;
   if (ttsWorker) {
     try {
-      const res = await fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }), signal: AbortSignal.timeout(30000) });
+      const res = await fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }) });
       if (res.ok) { fs.writeFileSync(out, Buffer.from(await res.arrayBuffer())); done = true; }
       else log(`tts worker ${res.status}: ${(await res.text()).slice(0, 120)} — falling back to the cli`);
     } catch (e) { log(`tts worker unreachable (${e.message}) — falling back to the cli`); }
