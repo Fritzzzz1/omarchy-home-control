@@ -1,10 +1,10 @@
-// Jarvis bar widget.
+// Home Control bar widget.
 //
 // Deliberately read-mostly. The one thing this widget will never do is stop or
 // restart the voice channel: the `claude` process talking to whoever is on the
 // phone is a child of that service, so a stray click on the bar would cut off a
 // live conversation. Starting a service that is down is safe, so that is offered;
-// stopping is left to `jarvis-voice-ctl`, which asks first.
+// stopping is left to `home-control-ctl`, which asks first.
 
 import QtQuick
 import Quickshell
@@ -14,11 +14,11 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "jarvis.voice"
+  moduleName: "omarchy.home-control"
 
   // Settings arrive as the shell.json layout entry minus its id, so the manifest
   // defaults are not merged in for us — they have to be restated here.
-  readonly property string unit: String(setting("unit", "jarvis-voice.service"))
+  readonly property string unit: String(setting("unit", "home-control.service"))
   readonly property int refreshIntervalSec: Math.min(600, Math.max(2,
       parseInt(String(setting("refreshIntervalSec", 10)), 10) || 10))
   readonly property bool showLabel: setting("showLabel", false) === true
@@ -39,7 +39,7 @@ BarWidget {
                                             : (up ? fg : Qt.darker(fg, 1.55))
 
   // --- status -----------------------------------------------------------------
-  // jarvis-voice-ctl is the single source of truth about how Jarvis is wired on
+  // home-control-ctl is the single source of truth about how Home Control is wired on
   // this machine; the widget deliberately knows nothing about ports or hostnames.
   Process {
     id: probe
@@ -67,7 +67,7 @@ BarWidget {
   function refresh() {
     if (probe.running)
       return
-    probe.command = ["jarvis-voice-ctl", "status", "--json"]
+    probe.command = ["home-control-ctl", "status", "--json"]
     probe.running = true
   }
 
@@ -113,13 +113,13 @@ BarWidget {
 
   readonly property string tooltip: {
     if (unitState === "missing")
-      return "Jarvis is not installed on this machine\n(run the plugin's install.sh)"
+      return "Home Control is not installed on this machine\n(run the plugin's install.sh)"
     if (up)
-      return "Jarvis is up" + (reachable ? "" : " but not answering on localhost")
+      return "Home Control is up" + (reachable ? "" : " but not answering on localhost")
           + (phoneUrl ? "\n" + phoneUrl : "") + "\nClick to open · right-click does nothing while it is up"
     if (broken)
-      return "Jarvis failed — jarvis-voice-ctl logs\nRight-click to start it"
-    return "Jarvis is " + unitState + "\nRight-click to start it"
+      return "Home Control failed — home-control-ctl logs\nRight-click to start it"
+    return "Home Control is " + unitState + "\nRight-click to start it"
   }
 
   BarIconButton {
@@ -127,7 +127,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     // Nerd Font microphone.
-    text: root.showLabel ? "\uf130  Jarvis" : "\uf130"
+    text: root.showLabel ? "\uf130  Home Control" : "\uf130"
     slotSize: Style.bar.statusSlot
     fontSize: Style.font.caption
     foreground: root.iconColor

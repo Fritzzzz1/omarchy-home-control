@@ -5,7 +5,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const label = process.env.VOICE_LABEL || 'voice';
-const state = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/jarvis-voice/state', label);
+const state = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/home-control/state', label);
 const port = Number(process.env.MONITOR_PORT || 4456);
 // The voice server the dashboard reads from. Upstream hardcoded :4455 here,
 // so a server on any other port was invisible to the monitor.

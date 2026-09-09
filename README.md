@@ -1,4 +1,4 @@
-# Jarvis — voice channel for an Omarchy machine
+# Omarchy Home Control — voice channel for an Omarchy machine
 
 Talk to the Claude agent running on your computer, from your phone, by voice.
 The phone is the microphone and the speaker; the machine does the thinking.
@@ -34,7 +34,7 @@ This is not a self-contained app. It needs, on the machine you install it on:
 | **node** (22+) | runs `server.mjs` | install refuses |
 | **the `claude` CLI**, logged in | the agent is Claude Code | install refuses |
 | **python3** | builds the venv for `edge-tts` | install refuses |
-| **jq**, **curl** | used by `jarvis-voice-ctl` and the widget | install refuses |
+| **jq**, **curl** | used by `home-control-ctl` and the widget | install refuses |
 | **a whisper endpoint or local model** | transcription | **install refuses — see below** |
 | **tailscale** | reaching it from a phone | install skips the serve step; you are LAN-only |
 | **mpv** or **ffplay** | playing replies on the machine's own speakers | replies still go to the phone |
@@ -52,7 +52,7 @@ You have two options:
   about 25 ms more than doing it locally. `--whisper-url http://<host>:4458`
 - **Run one locally.** Install `whisper.cpp` so `whisper-server` is on `PATH`,
   download a compatible model yourself, then use
-  `--whisper-model /path/to/ggml-model.bin`. Jarvis starts it on demand and
+  `--whisper-model /path/to/ggml-model.bin`. Home Control starts it on demand and
   keeps the model warm. The installer validates the binary and model path; it
   does not download either one.
 
@@ -61,7 +61,7 @@ typing. That is by design, not a crash.
 
 ## Install
 
-    git clone <this repo> && cd omarchy-jarvis
+    git clone <this repo> && cd omarchy-home-control
     ./install.sh --dry-run --whisper-url http://10.0.0.5:4458   # see every change first
     ./install.sh           --whisper-url http://10.0.0.5:4458
     # or: ./install.sh --whisper-model ~/.local/share/whisper/ggml-model.bin
@@ -76,12 +76,12 @@ mapping, which belongs to your tailscale login.
 
 | Path / thing | What |
 |---|---|
-| `~/.local/share/jarvis-voice/app/` | the app, copied from `app/` in this repo |
-| `~/.local/share/jarvis-voice/venv/` | a python venv with **`edge-tts`** in it |
-| `~/.local/share/jarvis-voice/state/<label>/` | transcript, passphrase, logins, logs, audio cache |
-| `~/.config/jarvis-voice/config.env` | **every machine-specific value, in one file** |
-| `~/.config/systemd/user/jarvis-voice.service` | the unit; `EnvironmentFile=` the above |
-| `~/.local/bin/jarvis-voice-ctl` | symlink to `bin/jarvis-voice-ctl` in this repo |
+| `~/.local/share/home-control/app/` | the app, copied from `app/` in this repo |
+| `~/.local/share/home-control/venv/` | a python venv with **`edge-tts`** in it |
+| `~/.local/share/home-control/state/<label>/` | transcript, passphrase, logins, logs, audio cache |
+| `~/.config/home-control/config.env` | **every machine-specific value, in one file** |
+| `~/.config/systemd/user/home-control.service` | the unit; `EnvironmentFile=` the above |
+| `~/.local/bin/home-control-ctl` | symlink to `bin/home-control-ctl` in this repo |
 | `loginctl enable-linger $USER` | so it survives logout and reboot |
 | `tailscale serve --https 8443 → 127.0.0.1:4455` | tailnet-only HTTPS. **Not** Funnel |
 | the app's `tts.py` shebang | rewritten to the venv's python |
@@ -101,15 +101,15 @@ never removes node/claude/tailscale.
 
 ## Configuration
 
-Everything lives in `~/.config/jarvis-voice/config.env`. It is a plain
+Everything lives in `~/.config/home-control/config.env`. It is a plain
 `KEY=VALUE` data file, not a shell script; values may contain spaces. Edit it, then
-`systemctl --user restart jarvis-voice` — **not while somebody is talking**.
+`systemctl --user restart home-control` — **not while somebody is talking**.
 
 | Variable | Default | What |
 |---|---|---|
 | `VOICE_ROOT` | `$HOME` | the folder the agent gets as its cwd. **It can read and edit anything under this.** |
 | `VOICE_LABEL` | hostname | names this instance and its state directory |
-| `VOICE_STATE` | `~/.local/share/jarvis-voice/state/<label>` | transcript, token, logs, audio |
+| `VOICE_STATE` | `~/.local/share/home-control/state/<label>` | transcript, token, logs, audio |
 | `VOICE_TOKEN` | `<state>/voice-token` | the passphrase file |
 | `VOICE_PORT` | `4455` | local HTTP port (bound to 127.0.0.1) |
 | `VOICE_HOST` | `127.0.0.1` | bind address. Changing this exposes the app; don't |
@@ -123,7 +123,7 @@ Everything lives in `~/.config/jarvis-voice/config.env`. It is a plain
 | `VOICE_VOICE_EN` / `VOICE_VOICE_HE` | Andrew / Avri | edge-tts voices |
 | `VOICE_MODEL`, `VOICE_EFFORT` | CLI defaults | `low` effort reaches the first sentence sooner |
 | `VOICE_REWRITE_MODEL` | a Haiku model | rewrites page-shaped replies for the ear |
-| `JARVIS_TAILNET_HOST` / `_PORT` | from tailscale / `8443` | used to print and open the phone URL |
+| `HOME_CONTROL_TAILNET_HOST` / `_PORT` | from tailscale / `8443` | used to print and open the phone URL |
 
 ## Cross-session delegation (Claude Code only)
 
@@ -163,8 +163,8 @@ own instructions rather than being left implied.
 
 ### Changing or revoking it
 
-    ~/.config/jarvis-voice/config.env      ->  VOICE_PEER_DELEGATION=off
-    systemctl --user restart jarvis-voice  # not while somebody is talking
+    ~/.config/home-control/config.env      ->  VOICE_PEER_DELEGATION=off
+    systemctl --user restart home-control  # not while somebody is talking
 
 Setting it to `off` removes `ListAgents` and `SendMessage` from the tools the
 agent is allowed to use, so the capability is gone, not merely discouraged.
@@ -177,12 +177,12 @@ back into step.
 
 ## Day to day
 
-    jarvis-voice-ctl status      # unit state, reachability, the phone URL
-    jarvis-voice-ctl doctor      # checks node, claude, edge-tts, whisper, tailscale
-    jarvis-voice-ctl logs -f
-    jarvis-voice-ctl url
+    home-control-ctl status      # unit state, reachability, the phone URL
+    home-control-ctl doctor      # checks node, claude, edge-tts, whisper, tailscale
+    home-control-ctl logs -f
+    home-control-ctl url
 
-`jarvis-voice-ctl restart` asks for confirmation, on purpose. The `claude`
+`home-control-ctl restart` asks for confirmation, on purpose. The `claude`
 process talking to whoever is on the phone is a child of this service; a restart
 ends their sentence mid-word.
 
@@ -190,16 +190,16 @@ ends their sentence mid-word.
 
     omarchy plugin add <git url of this repo> --enable
     # or, from a clone:
-    cp -r . ~/.config/omarchy/plugins/jarvis.voice && omarchy-shell shell rescanPlugins
+    cp -r . ~/.config/omarchy/plugins/omarchy.home-control && omarchy-shell shell rescanPlugins
 
 - **Click** — open the phone URL
 - **Right-click** — start the service, but only if it is down
 - **Middle-click** — refresh now
 
 It will not stop or restart the service. That is not an oversight: a misclick on
-the bar should not be able to hang up on someone. Use `jarvis-voice-ctl` for that.
+the bar should not be able to hang up on someone. Use `home-control-ctl` for that.
 
-The widget shells out to `jarvis-voice-ctl status --json` and knows nothing about
+The widget shells out to `home-control-ctl status --json` and knows nothing about
 ports or hostnames itself, so it keeps working when you change the config.
 If it shows "not installed", the service side has not been installed yet — the
 Omarchy plugin and the service install separately, and the plugin alone does

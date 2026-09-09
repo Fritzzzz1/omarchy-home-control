@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Jarvis, packaged — the case, and the caveats</title>
+<title>Home Control, packaged — the case, and the caveats</title>
 <style>
   :root{
     --bg:#0f1216; --panel:#161b22; --panel2:#1b2129; --line:#242c36;
@@ -135,8 +135,8 @@
 <!-- 1 -->
 <section>
   <div class="wrap">
-    <p class="kicker">Decision memo · omarchy-jarvis</p>
-    <h1>Jarvis, packaged.</h1>
+    <p class="kicker">Decision memo · omarchy-home-control</p>
+    <h1>Home Control, packaged.</h1>
     <p class="lead">You built the voice channel. This is about the box it now
       ships in — what that bought you, what it cost, and the three things it
       still cannot do.</p>
@@ -144,13 +144,13 @@
     <div class="grid g3">
       <div class="card accent">
         <h3>The claim</h3>
-        <p>Jarvis is now a git-cloneable Omarchy plugin with a reversible
+        <p>Home Control is now a git-cloneable Omarchy plugin with a reversible
           installer, and no line of it names your machine.</p>
       </div>
       <div class="card warnb">
         <h3>The catch</h3>
         <p>An Omarchy plugin is QML inside <span class="mono">omarchy-shell</span>.
-          Jarvis is a node daemon. It does not fit; it sits alongside.</p>
+          Home Control is a node daemon. It does not fit; it sits alongside.</p>
       </div>
       <div class="card badb">
         <h3>Untested</h3>
@@ -189,7 +189,7 @@
           yours.</p>
       </div>
       <div class="card">
-        <h3><span class="tag ok">run against live</span> jarvis-voice-ctl</h3>
+        <h3><span class="tag ok">run against live</span> home-control-ctl</h3>
         <p><span class="mono">status --json</span>, <span class="mono">doctor</span>,
           <span class="mono">logs</span>, <span class="mono">url</span>. The single
           place that knows the wiring — the widget shells out to it and knows no
@@ -203,7 +203,7 @@
         <p><span class="mono">omarchy plugin add &lt;git-url&gt; --enable</span>
           clones, validates, refuses reserved ids and symlinks, then enables.</p>
         <p>That gives a stranger the <em>widget</em>. It does not give them
-          Jarvis — they still run <span class="mono">install.sh</span>. The README
+          Home Control — they still run <span class="mono">install.sh</span>. The README
           says this in the first paragraph rather than burying it.</p>
       </div>
     </div>
@@ -218,13 +218,13 @@
     <h2>The shape</h2>
     <div class="grid g2">
       <div>
-<pre><span class="c">omarchy-jarvis/</span>
-<b>manifest.json</b>          <span class="c">schemaVersion 1, id "jarvis.voice"</span>
+<pre><span class="c">omarchy-home-control/</span>
+<b>manifest.json</b>          <span class="c">schemaVersion 1, id "omarchy.home-control"</span>
 <b>Panel.qml</b>              <span class="c">the bar widget (only file Omarchy loads)</span>
 <b>install.sh</b>             <span class="c">--dry-run prints every change</span>
 <b>uninstall.sh</b>           <span class="c">--purge is opt-in, never implied</span>
-bin/<b>jarvis-voice-ctl</b>   <span class="c">status | doctor | logs | url</span>
-systemd/<b>jarvis-voice.service.in</b>
+bin/<b>home-control-ctl</b>   <span class="c">status | doctor | logs | url</span>
+systemd/<b>home-control.service.in</b>
 app/                   <span class="c">vendored voice-chat</span>
   server.mjs  tts.py  monitor.mjs
   index.html  login.html  monitor.html
@@ -240,12 +240,12 @@ docs/pitch.html        <span class="c">this file</span></pre>
         <div class="card" style="margin-bottom:16px">
           <h3>The manifest, in full</h3>
 <pre style="margin:8px 0 0;font-size:12px">{ "schemaVersion": 1,
-  "id": <span class="a">"jarvis.voice"</span>,
+  "id": <span class="a">"omarchy.home-control"</span>,
   "kinds": [<span class="a">"bar-widget"</span>],
   "entryPoints": { "barWidget": "Panel.qml" },
   "barWidget": {
     "defaultSection": "right",
-    "defaults": { "unit": "jarvis-voice.service",
+    "defaults": { "unit": "home-control.service",
                   "refreshIntervalSec": 10 },
     "schema": [ <span class="c">/* generates the settings form */</span> ] } }</pre>
         </div>
@@ -270,7 +270,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
     <p class="kicker">How it is built</p>
     <h2>Why a hybrid, and not a plugin</h2>
     <p class="lead">This is the part a dishonest pitch would skip.</p>
-    <svg viewBox="0 0 1200 320" role="img" aria-label="Diagram: the Quickshell process holds only the QML bar widget; a separate systemd user service holds the actual voice channel; the two meet only through the jarvis-voice-ctl command, so the repo ships as both a plugin and a service installer.">
+    <svg viewBox="0 0 1200 320" role="img" aria-label="Diagram: the Quickshell process holds only the QML bar widget; a separate systemd user service holds the actual voice channel; the two meet only through the home-control-ctl command, so the repo ships as both a plugin and a service installer.">
       <!-- left column: the two processes -->
       <rect x="8" y="14" width="430" height="122" rx="9" fill="#161b22" stroke="#242c36"/>
       <text x="26" y="40" class="dlbl">QUICKSHELL PROCESS — omarchy-shell</text>
@@ -279,7 +279,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
       <text x="42" y="100" class="dtxt">all that Omarchy's plugin format can hold</text>
 
       <rect x="8" y="184" width="430" height="122" rx="9" fill="#161b22" stroke="#242c36"/>
-      <text x="26" y="210" class="dlbl">SYSTEMD USER SERVICE — jarvis-voice.service</text>
+      <text x="26" y="210" class="dlbl">SYSTEMD USER SERVICE — home-control.service</text>
       <rect x="26" y="224" width="394" height="66" rx="6" fill="#1b2129" stroke="#242c36"/>
       <text x="42" y="250" class="dtxt hi">server.mjs · tts.py · claude -p · edge-tts</text>
       <text x="42" y="270" class="dtxt">a long-lived node daemon</text>
@@ -295,7 +295,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
 
       <rect x="516" y="100" width="268" height="144" rx="9" fill="#161b22" stroke="#7bd0c1"/>
       <text x="538" y="128" class="dlbl">THE ONLY BRIDGE</text>
-      <text x="538" y="158" class="dtxt ac">jarvis-voice-ctl</text>
+      <text x="538" y="158" class="dtxt ac">home-control-ctl</text>
       <text x="538" y="184" class="dtxt">status --json</text>
       <text x="538" y="206" class="dtxt">systemctl --user is-active</text>
       <text x="538" y="228" class="dtxt">the widget knows no ports</text>
@@ -317,7 +317,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
           <span class="mono">service</span> — and
           <span class="mono">service</span> means a QML singleton inside the shell
           process, <em>not</em> a systemd unit. There is no kind that means "ship
-          me a daemon". So the format cannot carry Jarvis, only a view of it.</p>
+          me a daemon". So the format cannot carry Home Control, only a view of it.</p>
       </div>
       <div class="card">
         <h3>Why this is still the right container</h3>
@@ -372,7 +372,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
             <td>Your first name, inside the system prompt that rewrites long replies for the ear. Every installation would have spoken to you.</td></tr>
         <tr><td class="f">server.mjs:244</td>
             <td class="v">~/dev/<b>nanoclaw-v2</b>/data/models/ggml-large-v3-turbo.bin</td>
-            <td class="n">~/.local/share/jarvis-voice/models/…</td>
+            <td class="n">~/.local/share/home-control/models/…</td>
             <td>The whisper model default pointed inside an unrelated project of yours.</td></tr>
         </tbody>
       </table>
@@ -400,12 +400,12 @@ docs/pitch.html        <span class="c">this file</span></pre>
           <table>
             <thead><tr><th>Touches</th><th>What</th></tr></thead>
             <tbody>
-            <tr><td class="f">~/.local/share/jarvis-voice/app/</td><td>the app, copied from <span class="mono">app/</span></td></tr>
-            <tr><td class="f">…/jarvis-voice/venv/</td><td>python venv, <span class="mono">edge-tts</span> only</td></tr>
-            <tr><td class="f">…/jarvis-voice/state/&lt;label&gt;/</td><td>transcript, passphrase, logins, logs, audio</td></tr>
-            <tr><td class="f">~/.config/jarvis-voice/config.env</td><td>every machine-specific value, one file</td></tr>
+            <tr><td class="f">~/.local/share/home-control/app/</td><td>the app, copied from <span class="mono">app/</span></td></tr>
+            <tr><td class="f">…/home-control/venv/</td><td>python venv, <span class="mono">edge-tts</span> only</td></tr>
+            <tr><td class="f">…/home-control/state/&lt;label&gt;/</td><td>transcript, passphrase, logins, logs, audio</td></tr>
+            <tr><td class="f">~/.config/home-control/config.env</td><td>every machine-specific value, one file</td></tr>
             <tr><td class="f">~/.config/systemd/user/…</td><td>the unit; <span class="mono">EnvironmentFile=</span> the above</td></tr>
-            <tr><td class="f">~/.local/bin/jarvis-voice-ctl</td><td>symlink into the repo</td></tr>
+            <tr><td class="f">~/.local/bin/home-control-ctl</td><td>symlink into the repo</td></tr>
             <tr><td class="f">loginctl enable-linger</td><td>survives logout and reboot</td></tr>
             <tr><td class="f">tailscale serve :8443</td><td>tailnet only — <strong>never</strong> Funnel</td></tr>
             </tbody>
@@ -467,7 +467,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
         <p>The <span class="mono">claude</span> process talking to whoever is on
           the phone is a child of that service. A misclick on a status icon must
           not be able to hang up on your father mid-sentence.
-          <span class="mono">jarvis-voice-ctl restart</span> does it, and asks
+          <span class="mono">home-control-ctl restart</span> does it, and asks
           first.</p>
       </div>
       <div class="card warnb">
@@ -590,7 +590,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
             and inherits <span class="mono">BarWidget</span> — internal Omarchy
             API with no stability promise. An alpha that renames
             <span class="mono">BarIconButton</span> breaks the icon; it does not
-            break Jarvis.</p>
+            break Home Control.</p>
         </div>
       </div>
       <div>
@@ -660,7 +660,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
             reversible installer with a dry run, a control command, and a
             validated plugin manifest. Your app is genuinely no longer welded to
             this machine.</p>
-          <p>It did not make Jarvis one-command installable for a stranger, and
+          <p>It did not make Home Control one-command installable for a stranger, and
             it could not — the whisper dependency and the QML/daemon mismatch are
             both structural, not laziness.</p>
           <p>And it is a package that has never been unpacked. Everything above
@@ -670,7 +670,7 @@ docs/pitch.html        <span class="c">this file</span></pre>
         </div>
         <div class="rule"></div>
         <dl class="kv">
-          <dt>repo</dt><dd>~/dev/omarchy-jarvis</dd>
+          <dt>repo</dt><dd>~/dev/omarchy-home-control</dd>
           <dt>branch</dt><dd>main · 1 commit · no remote</dd>
           <dt>live service</dt><dd>home-voice.service — active, NRestarts=0</dd>
           <dt>voice-chat</dt><dd>untouched; your uncommitted changes intact</dd>

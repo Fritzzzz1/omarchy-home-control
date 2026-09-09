@@ -1,13 +1,13 @@
 #!/bin/bash
-# jarvis-voice-ctl — the one place that knows how Jarvis is wired on this machine.
+# home-control-ctl — the one place that knows how Home Control is wired on this machine.
 #
 # Both the bar widget and a human use this, so the QML stays dumb: it shells out
-# to `jarvis-voice-ctl status --json` and renders whatever comes back.
+# to `home-control-ctl status --json` and renders whatever comes back.
 
 set -uo pipefail
 
-CONFIG_FILE="${JARVIS_CONFIG:-$HOME/.config/jarvis-voice/config.env}"
-UNIT="${JARVIS_UNIT:-jarvis-voice.service}"
+CONFIG_FILE="${HOME_CONTROL_CONFIG:-$HOME/.config/home-control/config.env}"
+UNIT="${HOME_CONTROL_UNIT:-home-control.service}"
 
 # The service format is deliberately plain KEY=VALUE rather than shell code:
 # owner names and project paths commonly contain spaces, and a diagnostic command
@@ -20,7 +20,7 @@ load_config() {
     [[ $line =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     case "$key" in
-      PATH|VOICE_ROOT|VOICE_LABEL|VOICE_STATE|VOICE_TOKEN|VOICE_PORT|VOICE_HOST|TTS_PORT|WHISPER_URL|WHISPER_MODEL|VOICE_LOCAL_PLAYER|VOICE_OWNER|VOICE_EDGE_TTS|VOICE_PEER_DELEGATION|VOICE_MODEL|VOICE_EFFORT|VOICE_REWRITE_MODEL|VOICE_VOICE_EN|VOICE_VOICE_HE|JARVIS_TAILNET_HOST|JARVIS_TAILNET_PORT|JARVIS_TTS_PYTHON|JARVIS_APP_DIR)
+      PATH|VOICE_ROOT|VOICE_LABEL|VOICE_STATE|VOICE_TOKEN|VOICE_PORT|VOICE_HOST|TTS_PORT|WHISPER_URL|WHISPER_MODEL|VOICE_LOCAL_PLAYER|VOICE_OWNER|VOICE_EDGE_TTS|VOICE_PEER_DELEGATION|VOICE_MODEL|VOICE_EFFORT|VOICE_REWRITE_MODEL|VOICE_VOICE_EN|VOICE_VOICE_HE|HOME_CONTROL_TAILNET_HOST|HOME_CONTROL_TAILNET_PORT|HOME_CONTROL_TTS_PYTHON|HOME_CONTROL_APP_DIR)
         printf -v "$key" '%s' "$value"; export "$key" ;;
     esac
   done < "$CONFIG_FILE"
@@ -28,12 +28,12 @@ load_config() {
 load_config
 
 VOICE_PORT="${VOICE_PORT:-4455}"
-JARVIS_TAILNET_HOST="${JARVIS_TAILNET_HOST:-}"
-JARVIS_TAILNET_PORT="${JARVIS_TAILNET_PORT:-8443}"
+HOME_CONTROL_TAILNET_HOST="${HOME_CONTROL_TAILNET_HOST:-}"
+HOME_CONTROL_TAILNET_PORT="${HOME_CONTROL_TAILNET_PORT:-8443}"
 
 url() {
-  if [[ -n $JARVIS_TAILNET_HOST ]]; then
-    echo "https://$JARVIS_TAILNET_HOST:$JARVIS_TAILNET_PORT"
+  if [[ -n $HOME_CONTROL_TAILNET_HOST ]]; then
+    echo "https://$HOME_CONTROL_TAILNET_HOST:$HOME_CONTROL_TAILNET_PORT"
   else
     echo "http://127.0.0.1:$VOICE_PORT"
   fi
@@ -43,7 +43,7 @@ url() {
 state() { systemctl --user is-active "$UNIT" 2>/dev/null || true; }
 
 # Any HTTP status means the server answered. The login gate replies 302/401 to an
-# unauthenticated probe, so `curl -f` would call a perfectly healthy Jarvis dead.
+# unauthenticated probe, so `curl -f` would call a perfectly healthy Home Control dead.
 reachable() {
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$VOICE_PORT/" 2>/dev/null)
@@ -52,14 +52,14 @@ reachable() {
 
 usage() {
   cat <<'USAGE'
-Usage: jarvis-voice-ctl <command>
+Usage: home-control-ctl <command>
 
   status [--json]   unit state, local reachability, and the phone URL
   start | stop | restart
   enable | disable  start at boot (user linger must be on)
   logs [-f]         journalctl for the unit
   url               the URL to open on the phone
-  doctor            check the things Jarvis depends on
+  doctor            check the things Home Control depends on
 
 Restarting kills any conversation in progress: the `claude` process talking to
 the caller is a child of this service.
@@ -99,12 +99,12 @@ doctor)
   for c in node claude curl; do
     p=$(command -v "$c") && say "$c" "$p" || { say "$c" "NOT FOUND"; fail=1; }
   done
-  if [[ -n ${JARVIS_TTS_PYTHON:-} && -x ${JARVIS_TTS_PYTHON:-} ]]; then
-    say "tts python" "$JARVIS_TTS_PYTHON"
-    "$JARVIS_TTS_PYTHON" -c 'import edge_tts' 2>/dev/null \
+  if [[ -n ${HOME_CONTROL_TTS_PYTHON:-} && -x ${HOME_CONTROL_TTS_PYTHON:-} ]]; then
+    say "tts python" "$HOME_CONTROL_TTS_PYTHON"
+    "$HOME_CONTROL_TTS_PYTHON" -c 'import edge_tts' 2>/dev/null \
       && say "edge-tts" "importable" || { say "edge-tts" "NOT IMPORTABLE"; fail=1; }
   else
-    say "tts python" "MISSING (JARVIS_TTS_PYTHON)"; fail=1
+    say "tts python" "MISSING (HOME_CONTROL_TTS_PYTHON)"; fail=1
   fi
   if [[ -n ${WHISPER_URL:-} ]]; then
     curl -fsS -o /dev/null --max-time 4 "$WHISPER_URL" 2>/dev/null \

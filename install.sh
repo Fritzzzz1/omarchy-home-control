@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — put Jarvis on this machine.
+# install.sh — put Home Control on this machine.
 #
 # Everything this touches is listed by `./install.sh --dry-run`, and undone by
 # ./uninstall.sh. Nothing here needs root: it is all under $HOME, a systemd
@@ -11,9 +11,9 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
-UNIT_NAME="jarvis-voice.service"
+UNIT_NAME="home-control.service"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
-CONFIG_DIR="$CONFIG_HOME/jarvis-voice"
+CONFIG_DIR="$CONFIG_HOME/home-control"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 BIN_DIR="$HOME/.local/bin"
 
@@ -25,15 +25,15 @@ TTS_PORT=4457
 WHISPER_URL=""
 WHISPER_MODEL=""
 VOICE_ROOT="$HOME/dev"
-APP_DIR="$DATA_HOME/jarvis-voice/app"
-STATE_DIR=""            # defaults to $DATA_HOME/jarvis-voice/state/<label>
-VENV_DIR="$DATA_HOME/jarvis-voice/venv"
+APP_DIR="$DATA_HOME/home-control/app"
+STATE_DIR=""            # defaults to $DATA_HOME/home-control/state/<label>
+VENV_DIR="$DATA_HOME/home-control/venv"
 TAILNET_HOST=""         # discovered from tailscale
 TAILNET_PORT=8443
 LOCAL_PLAYER="mpv"
 NODE_BIN=""
 OWNER=""                # who the agent is talking to; default: your full name, else $USER
-AGENT_NAME="Jarvis"     # what the agent answers to
+AGENT_NAME="Home Control"     # what the agent answers to
 PEER_DELEGATION=""      # "" = ask when interactive; on | off set it outright
 DO_SERVE=1
 DO_ENABLE=1
@@ -70,7 +70,7 @@ Usage: ./install.sh [options]
   --port N              local HTTP port                              [$VOICE_PORT]
   --tts-port N          edge-tts worker port                         [$TTS_PORT]
   --app-dir DIR         where the app is installed                   [$APP_DIR]
-  --state-dir DIR       transcript, token, logs, audio cache         [\$DATA/jarvis-voice/state/<label>]
+  --state-dir DIR       transcript, token, logs, audio cache         [\$DATA/home-control/state/<label>]
   --venv DIR            python venv for edge-tts                     [$VENV_DIR]
   --node PATH           node binary (default: mise shim, else PATH)
   --player CMD          local playback command, mpv or ffplay        [$LOCAL_PLAYER]
@@ -123,7 +123,7 @@ while (( $# )); do
   esac
 done
 
-: "${STATE_DIR:=$DATA_HOME/jarvis-voice/state/$LABEL}"
+: "${STATE_DIR:=$DATA_HOME/home-control/state/$LABEL}"
 if [[ -z $OWNER ]]; then
   OWNER="$(getent passwd "$USER" 2>/dev/null | cut -d: -f5 | cut -d, -f1)"
   OWNER="${OWNER:-$USER}"
@@ -153,11 +153,11 @@ fi
 [[ -n $NODE_BIN && -x $NODE_BIN ]] || die "no node found; pass --node /path/to/node"
 note "node        $NODE_BIN ($("$NODE_BIN" --version 2>/dev/null || echo '?'))"
 
-command -v claude >/dev/null || die "the 'claude' CLI is not on PATH; Jarvis has nothing to talk to"
+command -v claude >/dev/null || die "the 'claude' CLI is not on PATH; there is nothing for it to talk to"
 note "claude      $(command -v claude)"
 command -v python3 >/dev/null || die "python3 is required to build the edge-tts venv"
 command -v curl >/dev/null || die "curl is required"
-command -v jq >/dev/null || die "jq is required (the bar widget and jarvis-voice-ctl use it)"
+command -v jq >/dev/null || die "jq is required (the bar widget and home-control-ctl use it)"
 
 if systemctl --user is-active --quiet "$UNIT_NAME" >/dev/null 2>&1 && (( ! FORCE )) && (( ! DRY_RUN )); then
   die "$UNIT_NAME is already running. Installing over it would restart it and cut off
@@ -309,12 +309,12 @@ note "it is never deleted by uninstall unless you pass --purge"
 # --- 4. config ----------------------------------------------------------------
 step "4. Config $CONFIG_FILE"
 write_file "$CONFIG_FILE" <<EOF
-# Jarvis — every machine-specific value, in one file.
-# Read by the systemd unit (EnvironmentFile) and by jarvis-voice-ctl. This is
+# Home Control — every machine-specific value, in one file.
+# Read by the systemd unit (EnvironmentFile) and by home-control-ctl. This is
 # data, not a shell script: each value is everything after its first '='.
 # Edit, then: systemctl --user restart $UNIT_NAME   (not while someone is talking)
 
-# Where the agent runs. This is the folder Jarvis can read, search and edit.
+# Where the agent runs. This is the folder Home Control can read, search and edit.
 VOICE_ROOT=$VOICE_ROOT
 VOICE_LABEL=$LABEL
 VOICE_STATE=$STATE_DIR
@@ -350,11 +350,11 @@ VOICE_PEER_DELEGATION=$PEER_DELEGATION
 #VOICE_MODEL=
 #VOICE_EFFORT=low
 
-# Used by jarvis-voice-ctl and the bar widget to build the phone URL.
-JARVIS_TAILNET_HOST=$TAILNET_HOST
-JARVIS_TAILNET_PORT=$TAILNET_PORT
-JARVIS_TTS_PYTHON=$TTS_PYTHON
-JARVIS_APP_DIR=$APP_DIR
+# Used by home-control-ctl and the bar widget to build the phone URL.
+HOME_CONTROL_TAILNET_HOST=$TAILNET_HOST
+HOME_CONTROL_TAILNET_PORT=$TAILNET_PORT
+HOME_CONTROL_TTS_PYTHON=$TTS_PYTHON
+HOME_CONTROL_APP_DIR=$APP_DIR
 
 # The unit inherits no PATH from a login shell. node, claude and the player must
 # all be findable here.
@@ -368,7 +368,7 @@ UNIT_TEXT="$(sed \
   -e "s|__APP_DIR__|$APP_DIR|g" \
   -e "s|__CONFIG_FILE__|$CONFIG_FILE|g" \
   -e "s|__NODE__|$NODE_BIN|g" \
-  "$PLUGIN_DIR/systemd/jarvis-voice.service.in")"
+  "$PLUGIN_DIR/systemd/home-control.service.in")"
 
 # Verify a throwaway copy before it can ever be loaded.
 VERIFY_DIR="$(mktemp -d)"
@@ -383,16 +383,16 @@ rm -rf "$VERIFY_DIR"
 write_file "$UNIT_DIR/$UNIT_NAME" <<<"$UNIT_TEXT"
 
 # --- 6. the control command ---------------------------------------------------
-step "6. jarvis-voice-ctl -> $BIN_DIR"
+step "6. home-control-ctl -> $BIN_DIR"
 run mkdir -p "$BIN_DIR"
-run ln -sf "$PLUGIN_DIR/bin/jarvis-voice-ctl" "$BIN_DIR/jarvis-voice-ctl"
+run ln -sf "$PLUGIN_DIR/bin/home-control-ctl" "$BIN_DIR/home-control-ctl"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) note "note: $BIN_DIR is not on your PATH" ;; esac
 
 # --- 7. start -----------------------------------------------------------------
 step "7. Enabling"
 run systemctl --user daemon-reload
 if (( DO_ENABLE )); then
-  # Linger keeps the user manager alive after logout, so Jarvis survives a reboot
+  # Linger keeps the user manager alive after logout, so Home Control survives a reboot
   # with nobody logged in. This is the only step that may ask for a password.
   if [[ "$(loginctl show-user "$USER" --property=Linger --value 2>/dev/null)" != yes ]]; then
     note "enabling linger so the service survives logout/reboot"
@@ -422,12 +422,12 @@ Installed.
 
   URL         $( [[ -n $TAILNET_HOST ]] && echo "https://$TAILNET_HOST:$TAILNET_PORT" || echo "http://127.0.0.1:$VOICE_PORT" )
   passphrase  $STATE_DIR/voice-token   (generated on first start)
-  status      jarvis-voice-ctl status
-  logs        jarvis-voice-ctl logs -f
-  check deps  jarvis-voice-ctl doctor
+  status      home-control-ctl status
+  logs        home-control-ctl logs -f
+  check deps  home-control-ctl doctor
 
 On the phone: join the same tailnet, open the URL, type the passphrase, add to
 the home screen so iOS keeps the microphone permission.
 
-Optional bar widget:  omarchy plugin enable jarvis.voice
+Optional bar widget:  omarchy plugin enable omarchy.home-control
 DONE

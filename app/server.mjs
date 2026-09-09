@@ -14,14 +14,14 @@ import { readBody } from './request-body.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
 const LABEL = process.env.VOICE_LABEL || 'voice';
-const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'state', LABEL);
+const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'home-control', 'state', LABEL);
 const AUDIO_DIR = path.join(STATE, 'audio');
 const TOKEN_FILE = process.env.VOICE_TOKEN || path.join(STATE, 'voice-token');
 const SESSIONS_FILE = path.join(STATE, 'logins.json');
 const CLAUDE_SESSION_FILE = path.join(STATE, 'claude-session.json');
 const TRANSCRIPT = path.join(STATE, 'transcript.jsonl');
 const LOG = path.join(STATE, 'voice.log');
-const EDGE_TTS = process.env.VOICE_EDGE_TTS || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'venv', 'bin', 'edge-tts');
+const EDGE_TTS = process.env.VOICE_EDGE_TTS || path.join(os.homedir(), '.local', 'share', 'home-control', 'venv', 'bin', 'edge-tts');
 const PORT = Number(process.env.VOICE_PORT || 4455);
 const HOST = process.env.VOICE_HOST || '127.0.0.1';
 
@@ -245,7 +245,7 @@ const stripMarkdown = (t) => t
 // ---------- transcription: whisper.cpp's own server, spawned here, model loaded once ----------
 const WHISPER_PORT = Number(process.env.WHISPER_PORT || 4456);
 const WHISPER_URL = (process.env.WHISPER_URL || '').replace(/\/$/, '');
-const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'models', 'ggml-large-v3-turbo.bin');
+const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'home-control', 'models', 'ggml-large-v3-turbo.bin');
 let whisper = null;
 const WHISPER_BASE = () => WHISPER_URL || `http://${HOST}:${WHISPER_PORT}`;
 const startWhisper = () => {

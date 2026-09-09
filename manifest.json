@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "jarvis.voice",
-  "name": "Jarvis Voice",
+  "id": "omarchy.home-control",
+  "name": "Omarchy Home Control",
   "version": "1.0.0",
   "author": "Liran Friedman",
   "license": "MIT",
@@ -13,13 +13,13 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Jarvis",
+    "displayName": "Home Control",
     "description": "Shows whether the voice channel is up; click to open the phone URL, right-click to start it when it is down.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "unit": "jarvis-voice.service",
+      "unit": "home-control.service",
       "refreshIntervalSec": 10,
       "showLabel": false
     },
@@ -28,7 +28,7 @@
         "key": "unit",
         "type": "string",
         "label": "systemd user unit",
-        "defaultValue": "jarvis-voice.service"
+        "defaultValue": "home-control.service"
       },
       {
         "key": "refreshIntervalSec",
@@ -42,7 +42,7 @@
       {
         "key": "showLabel",
         "type": "boolean",
-        "label": "Show the word \"Jarvis\" next to the icon",
+        "label": "Show the word \"Home Control\" next to the icon",
         "defaultValue": false
       }
     ]

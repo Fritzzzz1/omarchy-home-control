@@ -42,13 +42,13 @@ EDITS = [
     (
         "server.mjs",
         "const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'context-agent', LABEL);",
-        "const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'state', LABEL);",
+        "const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'home-control', 'state', LABEL);",
         "'context-agent' is the original author's directory name",
     ),
     (
         "server.mjs",
         "const EDGE_TTS = path.join(os.homedir(), '.local', 'share', 'context-agent', 'venv', 'bin', 'edge-tts');",
-        "const EDGE_TTS = process.env.VOICE_EDGE_TTS || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'venv', 'bin', 'edge-tts');",
+        "const EDGE_TTS = process.env.VOICE_EDGE_TTS || path.join(os.homedir(), '.local', 'share', 'home-control', 'venv', 'bin', 'edge-tts');",
         "absolute venv path with no override; this is the CLI fallback when the TTS worker is down",
     ),
     (
@@ -72,7 +72,7 @@ EDITS = [
     (
         "server.mjs",
         "const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), 'dev', 'nanoclaw-v2', 'data', 'models', 'ggml-large-v3-turbo.bin');",
-        "const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'models', 'ggml-large-v3-turbo.bin');",
+        "const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'home-control', 'models', 'ggml-large-v3-turbo.bin');",
         "the default pointed inside an unrelated project of the original author's",
     ),
     (
@@ -129,7 +129,7 @@ EDITS = [
         "monitor.mjs",
         "const state = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/context-agent/home');",
         "const label = process.env.VOICE_LABEL || 'voice';\n"
-        "const state = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/jarvis-voice/state', label);",
+        "const state = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/home-control/state', label);",
         "the monitor ignored VOICE_LABEL, so it read the wrong state dir for any other instance",
     ),
     (
