@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<meta name="theme-color" content="#101313">
+<meta name="apple-mobile-web-app-title" content="Home">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Home · voice</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/bundle.min.js"></script>
+<style>
+:root{color-scheme:dark;--bg:#101313;--panel:#191d1c;--line:#ffffff12;--ink:#eeeFE9;--dim:#929c96;--blue:#acc6b6;--green:#c9ebbd;--amber:#e5c28e;--red:#e99080}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{font-family:Heebo,system-ui,sans-serif;color:var(--ink);background:var(--bg);display:flex;flex-direction:column;overflow:hidden;background-image:radial-gradient(ellipse at 25% 36%,#253b2e36,transparent 52%)}button,input{font:inherit}button{cursor:pointer;transition:background .2s,transform .2s}button:hover{filter:brightness(1.15)}button:active{transform:translateY(1px)}button:focus-visible,input:focus-visible{outline:2px solid var(--green);outline-offset:5px}button:disabled{opacity:.5;cursor:wait}header{display:flex;align-items:center;gap:12px;padding:28px 36px;flex:none}header h1{font-size:18px;font-weight:500;letter-spacing:-.5px;margin:0;flex:1}body>header{display:grid;grid-template-columns:1fr auto 1fr;position:relative;z-index:2;box-shadow:0 16px 24px -20px #00000090,0 1px 0 #ffffff0f}body>header h1{flex:none;text-align:center;position:relative}body>header #refresh{justify-self:start}body>header .header-end{justify-self:end;display:flex;align-items:center;gap:4px}body>header h1:before{content:'◌';font-size:29px;color:var(--green);position:absolute;right:100%;top:50%;transform:translateY(-50%);margin-right:10px}header button{color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:30px;padding:8px 16px;font-size:12px}#refresh{flex:none;width:34px;height:34px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;color:var(--dim);background:transparent}#refresh svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#refresh:hover{background:#ffffff0d;color:var(--ink)}#refresh:active{background:#ffffff14}#reset,#settingsBtn{flex:none;width:34px;height:34px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;color:var(--dim);background:transparent}#reset svg,#settingsBtn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#reset:hover,#settingsBtn:hover{background:#ffffff0d;color:var(--ink)}#reset:active,#settingsBtn:active{background:#ffffff14}.brand-sub{font-size:10px;color:var(--dim);letter-spacing:2px;margin-left:16px;text-transform:uppercase}.eyebrow{font-size:10px;letter-spacing:2.8px;text-transform:uppercase;color:var(--dim)}
+#top{display:flex;flex-direction:column;align-items:center;gap:20px;padding:28px 24px 10px;flex:none;text-align:center}.orb-stage{height:240px;width:280px;display:grid;place-items:center;position:relative;margin:4px 0}.orb-stage:before,.orb-stage:after{content:'';position:absolute;border:1px solid #c9ebbd0c;border-radius:50%;width:240px;height:240px}.orb-stage:after{width:280px;height:280px;border-style:dashed;opacity:.65}#orb{position:relative;width:174px;height:174px;border-radius:50%;border:0;padding:0;background:radial-gradient(circle at 32% 26%,#e4f4bc 0%,#a6c28f 23%,#638e78 45%,#284f48 68%,#142c29 90%);box-shadow:inset -12px -16px 25px #071b24aa,inset 4px 4px 18px #e9ffbf60,0 0 70px #a3dba21a;transform:scale(var(--level,1));transition:transform .12s,filter .6s;z-index:1;cursor:pointer}#orb:after{content:'';position:absolute;inset:9px;border-radius:50%;background:repeating-radial-gradient(ellipse at 32% 25%,transparent 0 3px,#e5ffd30b 4px 5px);filter:blur(.3px)}#orb.off{filter:saturate(.65)}#orb.listening{box-shadow:inset -12px -16px 25px #071b24aa,inset 4px 4px 18px #e9ffbf60,0 0 90px #a3dba238}#orb.thinking,#orb.startup{filter:hue-rotate(325deg);animation:breathe 2.6s ease-in-out infinite}#orb.speaking{animation:breathe 1.1s ease-in-out infinite}#orb.error{filter:hue-rotate(265deg)}@keyframes breathe{50%{transform:scale(1.07);box-shadow:inset -12px -16px 25px #071b24aa,0 0 90px #a3dba24a}}#modeText{font-size:28px;letter-spacing:-1px;font-weight:400;min-height:42px;max-width:100%}#heard{flex:none;margin:12px 48px;padding:12px 18px;border:1px solid var(--line);border-radius:14px;background:#b8d6bd0c;font-size:14px;line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}#heard.hidden{display:none}#heard.open{-webkit-line-clamp:unset}#heard:before{content:'You · ';color:var(--dim)}#exchange{flex:1;min-height:0;overflow-y:auto;padding:8px 48px 20px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}#hint{color:var(--dim);text-align:center;font-size:14px;line-height:1.8;max-width:330px;margin:8px auto}#reply{display:none;font-size:19px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}#reply span{color:var(--dim);transition:color .25s}#reply span.now{color:#edf8d9}#reply span.done{color:var(--ink);opacity:.72}
+#controls{flex:none;padding:16px 36px calc(env(safe-area-inset-bottom) + 26px);display:flex;flex-direction:column;align-items:center;gap:18px}#big{background:var(--green);border:0;border-radius:40px;padding:15px 38px;font-size:14px;font-weight:500;color:#203123;min-width:190px;box-shadow:0 4px 24px #b4e7ad10;display:flex;align-items:center;justify-content:center}#big svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#big.stop{background:#442c28;color:#ffb6a7}#row{display:flex;justify-content:center;gap:12px}#row button{width:42px;height:42px;display:grid;place-items:center;border-radius:50%;background:transparent;color:var(--dim);border:1px solid var(--line);padding:0;font-size:12px}#row button svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}#row button.hidden{opacity:.22;pointer-events:none}#row #skip{width:52px;border-radius:30px}#mute.on,#earMute.on{color:var(--amber);background:#e5c28e15}.control-note{font-size:10px;color:#69766d;letter-spacing:.4px}
+#history{position:fixed;inset:0;background:#151918;display:none;flex-direction:column;z-index:3}#history.open{display:flex}#history header{border-bottom:1px solid var(--line);padding:calc(env(safe-area-inset-top) + 27px) 26px 27px}#history h1{font-size:14px;letter-spacing:0}#close{flex:none;width:34px;height:34px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;color:var(--dim);background:transparent}#close svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#close:hover{background:#ffffff0d;color:var(--ink)}#history h1 small{display:block;color:var(--dim);font-size:11px;font-weight:400;margin-top:5px}#log{flex:1;min-height:0;overflow-y:auto;padding:26px;display:flex;flex-direction:column;gap:25px;scroll-behavior:smooth}#log:empty:before{content:'No messages yet.';color:#b7c4bb;font-size:18px;margin-top:auto}#log:empty:after{content:'Speak or type a message to begin.';font-size:13px;color:var(--dim);line-height:1.8;margin-bottom:auto}.msg{max-width:100%;font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}.msg:before{display:block;font-size:9px;letter-spacing:1.8px;margin-bottom:7px;color:var(--dim)}.msg.user{align-self:stretch;padding:15px 18px;background:#ffffff04;border:1px solid var(--line);border-radius:14px}.msg.user:before{content:'YOU'}.msg.agent{padding:0 4px}.msg.agent:before{content:'HOME';color:var(--green)}.typebar{display:flex;gap:10px;margin:16px 22px 24px;padding:7px;border:1px solid #ffffff18;border-radius:16px;background:#ffffff03}#text{min-width:0;flex:1;border:0;background:transparent;color:var(--ink);padding:10px;font-size:13px;outline-offset:0}#send{width:38px;flex:none;background:var(--green);color:#203123;border:0;border-radius:10px;font-size:20px}
+@media(min-width:900px){body{padding-right:380px}body>header{padding-top:32px}#history{display:flex;inset:20px 20px 20px auto;width:360px;border:1px solid var(--line);border-radius:22px;z-index:1}#close{display:none}#top{padding-top:clamp(24px,6vh,90px)}.orb-stage{height:280px;margin:18px 0}#exchange,#heard{width:min(100%,660px);align-self:center}#controls{padding-bottom:32px}#row #transcript{display:none}}
+@media(min-width:1400px){body{padding-right:460px}#history{width:420px;right:24px;top:24px;bottom:24px}.orb-stage{height:320px}#orb{width:210px;height:210px}.orb-stage:before{width:280px;height:280px}.orb-stage:after{width:320px;height:320px}}
+@media(max-width:599px){header{padding:calc(env(safe-area-inset-top) + 18px) 22px 12px}.brand-sub{display:none}#top{padding-top:16px;gap:14px}.orb-stage{height:210px;margin:0}.orb-stage:before{width:210px;height:210px}.orb-stage:after{width:246px;height:246px}#orb{width:155px;height:155px}#modeText{font-size:25px}#exchange{padding:8px 26px 12px}#heard{margin:8px 24px}#controls{padding-top:10px;gap:14px}.typebar{margin-bottom:calc(env(safe-area-inset-bottom) + 20px)}}
+@media(max-height:700px){#top{padding-top:5px;gap:8px}.orb-stage{height:160px;margin:0}.orb-stage:before{width:156px;height:156px}.orb-stage:after{width:182px;height:182px}#orb{width:125px;height:125px}#controls{gap:10px;padding-bottom:14px}.control-note{display:none}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Compact voice header, readable exchange, and a stable control dock. */
+body{height:100dvh}#top{padding:12px 24px 16px;gap:10px}.orb-stage{height:160px;width:180px;margin:0}.orb-stage:before{width:148px;height:148px}.orb-stage:after{width:174px;height:174px}#orb{width:116px;height:116px}#modeText{font-size:22px;line-height:1.4;min-height:31px;letter-spacing:-.4px}#exchange{padding:12px 24px 20px;gap:18px;scroll-padding:16px}#heard{display:block;margin:0;padding:15px 18px;flex:none;line-height:1.65;font-size:15px;overflow:visible;-webkit-line-clamp:unset;background:#b8d6bd06;border-color:#b8d6bd16;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere}#heard:before{content:'YOU';display:block;color:#92aa9c;font-size:10px;letter-spacing:1.6px;margin-bottom:6px}#heard.hidden{display:none}#reply{flex:none;background:#d28e6807;border:1px solid #d28e6820;border-radius:14px;padding:18px;font-size:17px;line-height:1.75;white-space:normal;letter-spacing:.05px}#reply:before{content:'✺  CLAUDE';display:block;font-size:10px;letter-spacing:1.6px;color:#d3a084;margin-bottom:12px}#reply span{display:block;margin:0 0 12px;white-space:pre-wrap;color:#d5dcd6;transition:color .2s}#reply span:last-child{margin-bottom:0}#reply span.now{color:#f4e7dd}#reply span.done{color:#d5dcd6;opacity:1}#reply.speaking{border-color:#d28e683d}#hint{font-size:14px;line-height:1.7;margin:auto;max-width:260px;padding:24px 0}#controls{align-items:stretch;padding:14px 24px calc(env(safe-area-inset-bottom) + 16px);gap:10px;border-top:1px solid var(--line);background:#101313}#big{width:100%;min-height:52px;padding:13px 20px;border-radius:14px;font-size:15px;box-shadow:none}#row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}#row button,#row #skip{width:100%;height:60px;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px;border-radius:12px;border:1px solid #ffffff12;background:#ffffff03;padding:8px 4px;color:#b5c1b8;font-size:10px;font-weight:400;line-height:1.1}#row button svg{width:19px;height:19px;flex:none}#row button.hidden,#row button:disabled{opacity:.35;cursor:default}#row #mute.on,#row #earMute.on{color:#e5c28e;background:#e5c28e10;border-color:#e5c28e30}#history header h1 small{display:none}.msg{font-size:16px;line-height:1.75}.msg.agent{padding:16px 18px;background:#d28e6807;border:1px solid #d28e6820;border-radius:14px}.msg.agent:before{content:'✺ CLAUDE';color:#d3a084}#log{gap:18px;padding:20px}.typebar{margin-top:8px}#text{font-size:16px}
+@media(min-width:900px){#top{padding-top:22px}#exchange{width:min(100%,700px)}#exchange #heard{width:100%;align-self:auto}#controls{width:min(100%,700px);align-self:center}#row{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:899px){body>header{padding:calc(env(safe-area-inset-top) + 14px) 20px 8px}.brand-sub{display:none}body>header button{font-size:11px;padding:8px 12px}#top{flex-direction:row;justify-content:flex-start;text-align:left;gap:24px;padding:10px 28px 14px;min-height:112px}.orb-stage{width:96px;height:96px;flex:none}.orb-stage:before{width:92px;height:92px}.orb-stage:after{width:112px;height:112px}#orb{width:76px;height:76px}#modeText{font-size:20px;min-height:0;max-height:84px;overflow:auto;overflow-wrap:anywhere}#exchange{padding:10px 20px 18px;gap:14px}#heard{font-size:14px;padding:14px 16px}#reply{font-size:17px;padding:16px}#controls{padding:12px 20px calc(env(safe-area-inset-bottom) + 12px)}}
+@media(max-height:650px) and (max-width:899px){#top{min-height:84px;padding-top:5px;padding-bottom:9px;gap:20px}.orb-stage{width:70px;height:70px}.orb-stage:before{width:68px;height:68px}.orb-stage:after{width:82px;height:82px}#orb{width:56px;height:56px}#row button,#row #skip{height:52px}#controls{padding-top:8px;gap:8px}#big{min-height:46px;padding:10px}}
+
+/* Reading takes priority on the phone. */
+@media(max-width:899px){
+body>header{padding:calc(env(safe-area-inset-top) + 10px) 18px 6px;min-height:48px}
+body>header h1{font-size:17px}body>header h1:before{font-size:23px;margin-right:7px}
+body>header button{padding:7px 11px;min-height:36px}
+#top{padding:5px 22px 9px;min-height:64px;gap:16px;align-items:center;border-bottom:1px solid var(--line)}
+.orb-stage{width:48px;height:48px}.orb-stage:before{width:46px;height:46px}.orb-stage:after{display:none}#orb{width:38px;height:38px;box-shadow:inset -4px -5px 10px #071b24aa,0 0 20px #a3dba218}#orb:after{inset:3px}
+#modeText{font-size:16px;letter-spacing:0;line-height:1.45;max-height:48px}
+#exchange{padding:14px 16px;gap:12px}#heard{padding:12px 14px;font-size:14px}#heard:before{font-size:9px;margin-bottom:4px}
+#reply{padding:14px;font-size:17px;line-height:1.7}#reply:before{margin-bottom:10px;font-size:9px}
+#controls{padding:10px 16px calc(env(safe-area-inset-bottom) + 10px);gap:8px}#big{min-height:46px;padding:10px 18px;border-radius:12px;font-size:14px}
+#row{gap:8px}#row button,#row #skip{height:50px;padding:6px 3px;gap:4px;font-size:10px;border-radius:10px}#row button svg{width:17px;height:17px}
+}
+
+/* Settings modal: one field for now (Mode) */
+.settings-overlay{position:fixed;inset:0;background:#05070690;display:none;align-items:center;justify-content:center;z-index:5;padding:24px}
+.settings-overlay.open{display:flex}
+.settings-panel{background:var(--panel);border:1px solid var(--line);border-radius:20px;max-width:340px;width:100%;padding:22px;box-shadow:0 20px 60px -20px #000000a0}
+.settings-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.settings-head h2{margin:0;font-size:15px;font-weight:500}
+#settingsClose{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;color:var(--dim);background:transparent}
+#settingsClose svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#settingsClose:hover{background:#ffffff0d;color:var(--ink)}
+.setting-row{display:flex;flex-direction:column;gap:8px}
+.setting-label{font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--dim)}
+.seg{display:flex;border:1px solid var(--line);border-radius:12px;padding:3px;gap:3px}
+.seg button{flex:1;padding:9px 10px;border-radius:9px;border:0;background:transparent;color:var(--dim);font-size:13px}
+.seg button[aria-pressed="true"]{background:var(--green);color:#203123}
+.seg-speed button{padding:9px 3px;font-size:12px}   /* five options have to fit one phone-width row */
+.setting-row+.setting-row{margin-top:18px}
+@keyframes pieceIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.flow-in{animation:pieceIn .5s ease-out both}
+</style>
+</head>
+<body>
+<header>
+  <button id="refresh" aria-label="Reload" title="Reload"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg></button>
+  <h1>Home<span class="brand-sub">Voice</span></h1>
+  <div class="header-end">
+    <button id="settingsBtn" aria-label="Settings" title="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    <button id="reset" aria-label="New conversation" title="start a new conversation — clears the current session"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/></svg></button>
+  </div>
+</header>
+<div id="top">
+  <div class="orb-stage"><button id="orb" class="off" aria-label="Interrupt reply or resume audio"></button></div>
+  <div id="modeText" role="status" aria-live="polite">Let’s talk.</div>
+</div>
+<div id="exchange" aria-label="Current conversation">
+  <div id="heard" class="hidden" dir="auto"></div>
+  <div id="hint">Tap Start conversation, then speak naturally.</div>
+  <div id="reply" dir="auto"></div>
+</div>
+<div id="controls">
+  <button id="big" aria-label="Start conversation" title="Start opens the mic; Stop closes it. The conversation is kept until you tap new."><svg id="bigPlayIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg><svg id="bigStopIcon" viewBox="0 0 24 24" aria-hidden="true" style="display:none"><path d="M6 6h12v12H6z"/></svg></button>
+  <div id="row" aria-label="Conversation controls">
+    <button id="mute" aria-label="Mute microphone" title="mute the microphone"><svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/><path id="micSlash" d="M4 4l16 16" style="display:none"/></svg></button>
+    <button id="earMute" aria-label="Mute earphone" title="mute the reply's audio on this phone"><svg viewBox="0 0 24 24"><path d="M4 18v-6a8 8 0 0 1 16 0v6"/><path d="M4 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H4z"/><path d="M20 18a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/><path id="earSlash" d="M4 4l16 16" style="display:none"/></svg></button>
+    <button id="pause" aria-label="Pause or resume reply" class="hidden" disabled title="pause or resume the reply"><svg id="pauseIcon" viewBox="0 0 24 24"><path d="M8 5v14"/><path d="M16 5v14"/></svg><svg id="playIcon" viewBox="0 0 24 24" style="display:none"><path d="M7 4l13 8-13 8z"/></svg></button>
+    <button id="skip" aria-label="Skip" class="hidden" disabled title="skip the rest of the reply"><svg viewBox="0 0 24 24"><path d="M5 5l10 7-10 7z"/><path d="M19 5v14"/></svg></button>
+    <button id="transcript" aria-label="Open transcript" title="transcript and typing"><svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg></button>
+  </div>
+
+</div>
+<div id="history" aria-label="Conversation transcript">
+  <header><h1>Conversation<small></small></h1><button id="close" aria-label="Close transcript" title="close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6l-12 12"/></svg></button></header>
+  <div id="log"></div>
+  <div class="typebar"><input id="text" type="text" placeholder="Message…" aria-label="Message" autocomplete="off" enterkeyhint="send"><button id="send" aria-label="Send message">→</button></div>
+</div>
+<div id="settingsPanel" class="settings-overlay" aria-label="Settings">
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="settings-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <button id="settingsClose" aria-label="Close settings" title="close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6l-12 12"/></svg></button>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">Mode</div>
+      <div class="seg" role="radiogroup" aria-label="Mode">
+        <button type="button" class="seg-mode" data-mode="auto" role="radio" aria-checked="true" aria-pressed="true">Auto</button>
+        <button type="button" class="seg-mode" data-mode="manual" role="radio" aria-checked="false" aria-pressed="false">Manual</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">Text</div>
+      <div class="seg" role="radiogroup" aria-label="Text">
+        <button type="button" class="seg-text" data-text="instant" role="radio" aria-checked="true" aria-pressed="true">Instant</button>
+        <button type="button" class="seg-text" data-text="flowing" role="radio" aria-checked="false" aria-pressed="false">Flowing</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">Speed</div>
+      <div class="seg seg-speed" role="radiogroup" aria-label="Speaking speed">
+        <button type="button" class="seg-rate" data-rate="0.75" role="radio" aria-checked="false" aria-pressed="false">0.75×</button>
+        <button type="button" class="seg-rate" data-rate="1" role="radio" aria-checked="true" aria-pressed="true">1×</button>
+        <button type="button" class="seg-rate" data-rate="1.25" role="radio" aria-checked="false" aria-pressed="false">1.25×</button>
+        <button type="button" class="seg-rate" data-rate="1.5" role="radio" aria-checked="false" aria-pressed="false">1.5×</button>
+        <button type="button" class="seg-rate" data-rate="1.75" role="radio" aria-checked="false" aria-pressed="false">1.75×</button>
+      </div>
+    </div>
+  </div>
+</div>
+<audio id="player" playsinline></audio>
+<script>
+const $ = (id) => document.getElementById(id);
+const orb = $('orb'), modeText = $('modeText'), heard = $('heard'), reply = $('reply'), hint = $('hint'), exchange = $('exchange'), player = $('player'), big = $('big'), mute = $('mute'), earMute = $('earMute'), logEl = $('log');
+const CDN_VAD = 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/';
+const CDN_ORT = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+const PAUSE_MS = 1500;   // silence that ends what you were saying
+const IDLE_END_MS = 10 * 60 * 1000;   // no speech for this long ends the conversation and closes the mic
+
+let on = false, busy = false, muted = false, earMuted = false, vad = null, unlocked = false, wakeLock = null;
+let queue = [], playing = false, currentTurn = 0, paused = false, nowSpan = null, idleTimer = null;
+let voiceMode = 'auto';   // 'auto' (default) or 'manual'
+try { if (localStorage.getItem('voiceMode') === 'manual') voiceMode = 'manual'; } catch {}
+let dictating = false, dictateFrames = [];   // manual mode: raw 16kHz frames buffered between orb taps
+let speechOpen = false;   // auto mode: an utterance the VAD started while the mic was live
+let textFlow = 'instant';   // 'instant' (default) or 'flowing'
+try { if (localStorage.getItem('textFlow') === 'flowing') textFlow = 'flowing'; } catch {}
+// Playback speed is applied on this phone, not in the TTS: it takes effect on the sentence already
+// playing, costs no re-render, and stays per-device. Pitch is preserved, so faster isn't chipmunk.
+const RATES = [0.75, 1, 1.25, 1.5, 1.75];
+let speechRate = 1;
+try { const r = Number(localStorage.getItem('speechRate')); if (RATES.includes(r)) speechRate = r; } catch {}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const touch = () => { clearTimeout(idleTimer); if (on) idleTimer = setTimeout(() => { end(); hint.style.display = ''; hint.textContent = 'Mic closed after ten quiet minutes. The conversation is kept; tap Start to go on.'; }, IDLE_END_MS); };
+
+const setMode = (cls, text) => {
+  orb.className = cls; modeText.textContent = text;
+  const speaking = cls === 'speaking';
+  $('pause').classList.toggle('hidden', !speaking); $('skip').classList.toggle('hidden', !speaking); $('pause').disabled = !speaking; $('skip').disabled = !speaking; reply.classList.toggle('speaking', speaking);
+  if (!speaking) setPaused(false);
+};
+const setPaused = (p) => { paused = p; $('pause').setAttribute('aria-label', p ? 'Resume reply' : 'Pause reply'); $('pauseIcon').style.display = p ? 'none' : ''; $('playIcon').style.display = p ? '' : 'none'; };
+const add = (cls, body) => { const d = document.createElement('div'); d.className = 'msg ' + cls; d.dir = 'auto'; d.textContent = body; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; return d; };
+const showHeard = (text) => { hint.style.display = 'none'; heard.textContent = text; heard.classList.remove('hidden', 'open'); reply.textContent = ''; reply.style.display = 'none'; exchange.scrollTop = 0; };
+heard.onclick = () => heard.classList.toggle('open');
+// each sentence of the reply is a span; the one being spoken is lit and kept in view
+// new sentences never pull the view away from the one being spoken
+const addPiece = (text) => { reply.style.display = 'block'; const s = document.createElement('span'); s.textContent = text + ' '; if (textFlow === 'flowing') s.classList.add('flow-in'); reply.appendChild(s); if (!nowSpan && reply.childElementCount === 1) exchange.scrollTop = 0; return s; };
+
+// iOS plays audio only from an element a tap has started; the Start tap plays a silent clip to unlock it for every later reply.
+const unlock = () => { if (unlocked) return; unlocked = true; player.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA='; player.play().catch(() => {}); };
+const keepAwake = async () => { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} };
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && on) keepAwake(); });
+
+// ---- the ear: Silero VAD on the open microphone; each utterance becomes one WAV and one turn
+const wavFromFloat32 = (samples, rate = 16000) => {
+  const buf = new ArrayBuffer(44 + samples.length * 2); const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) { const s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+  return new Blob([buf], { type: 'audio/wav' });
+};
+async function startEar() {
+  if (vad) { await vad.start(); return; }
+  vad = await window.vad.MicVAD.new({
+    baseAssetPath: CDN_VAD, onnxWASMBasePath: CDN_ORT, model: 'v5',
+    positiveSpeechThreshold: 0.6, negativeSpeechThreshold: 0.4, redemptionMs: PAUSE_MS, minSpeechMs: 300, preSpeechPadMs: 400,
+    submitUserSpeechOnPause: true,   // pausing hands the in-progress utterance to onSpeechEnd instead of dropping it
+    // In manual mode, nothing reacts to sound until the orb is tapped to start dictating — an
+    // untapped orb that still says "Hearing you" and pulses looks like it's capturing when it
+    // isn't, and a real utterance can be lost before anyone notices. (Liran, 09-09: lost his
+    // mom's first prompt to exactly this.)
+    onSpeechStart: () => { if (busy || muted) return; speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
+    onFrameProcessed: (p, frame) => {
+      if (busy || muted) return;
+      if (voiceMode === 'manual' && !dictating) return;   // pre-tap: stay visually inert
+      orb.style.setProperty('--level', String(1 + Math.min(0.35, p.isSpeech * 0.4)));
+      if (dictating && frame) dictateFrames.push(frame.slice());
+    },
+    onVADMisfire: () => { speechOpen = false; if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
+    // Muting means "stop hearing me from now on", not "throw away what I just said": an utterance
+    // that began while the mic was still live goes up even if the mute tap lands during the pause
+    // before the VAD closes it. Stopping the session, or a turn already in flight, still drops it.
+    // (Liran, 09-09: muted right after speaking and lost the sentence.)
+    onSpeechEnd: (audio) => {
+      const wasLive = speechOpen; speechOpen = false;
+      if (!on || busy || voiceMode === 'manual') return;
+      if (muted && !wasLive) return;
+      sendAudio(wavFromFloat32(audio));
+    },
+  });
+  await vad.start();
+}
+const earOff = () => { try { vad?.pause(); } catch {} orb.style.setProperty('--level', '1'); };
+const earOn = () => {
+  if (!on) return;
+  if (muted) { setMode('off', 'Muted'); return; }   // a turn that ends while muted lands back on Muted, not on a stale "Speaking"
+  try { vad?.start(); } catch {}
+  setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');
+};
+// The mic is left alone once opened: no watchdog, no automatic reopen (a rebuilt mic without a tap starts suspended on iPhone and the page looped).
+
+// ---- manual mode: mic stays open and VAD keeps running (for the level meter), but nothing is
+// sent until the orb is tapped twice — no silence timeout ends it early. Frames are buffered from
+// the same VAD audio pipeline (onFrameProcessed), so there's no second microphone stream.
+function toggleDictate() {
+  if (!on || muted) return;
+  if (!dictating) { dictating = true; dictateFrames = []; touch(); setMode('listening', 'Recording — tap to send'); return; }
+  if (!flushDictate()) setMode('listening', 'Listening');
+}
+// Ends the buffered utterance and sends it; true if there was anything to send. Muting goes through
+// here too, so a mute tap mid-dictation still delivers what was already recorded.
+function flushDictate() {
+  dictating = false;
+  const frames = dictateFrames; dictateFrames = [];
+  const total = frames.reduce((n, f) => n + f.length, 0);
+  if (!total) return false;
+  const merged = new Float32Array(total);
+  let off = 0; for (const f of frames) { merged.set(f, off); off += f.length; }
+  sendAudio(wavFromFloat32(merged));
+  return true;
+}
+
+
+// ---- the turn: audio (or typed text) up, transcript + text + sentence audio down
+async function sendAudio(blob) { await turn({ body: blob, headers: { 'Content-Type': 'audio/wav' } }); }
+async function sendText(msg) { msg = (msg || '').trim(); if (!msg) return; $('text').value = ''; showHeard(msg); add('user', msg); await turn({ body: JSON.stringify({ text: msg }), headers: { 'Content-Type': 'application/json' } }); }
+async function turn(init) {
+  if (busy) return;
+  busy = true; earOff(); unlock();
+  const mine = ++currentTurn;
+  queue = []; nowSpan = null;
+  setMode('thinking', init.headers['Content-Type'] === 'audio/wav' ? 'Heard you' : 'Thinking');
+  const watchdog = new AbortController(); let quiet = null;
+  const alive = () => { clearTimeout(quiet); quiet = setTimeout(() => watchdog.abort(), 180000); };
+  alive();
+  try {
+    let res = await fetch('/api/turn', { method: 'POST', ...init, signal: watchdog.signal });
+    for (let wait = 0; res.status === 409 && wait < 90; wait += 2) { setMode('thinking', 'Finishing the last answer first'); await sleep(2000); if (mine !== currentTurn) return; res = await fetch('/api/turn', { method: 'POST', ...init, signal: watchdog.signal }); }
+    if (res.status === 401) { location.reload(); return; }
+    if (res.status === 409) { setMode('error', 'The server is still busy; try again in a moment'); return; }
+    if (!res.ok) { setMode('error', 'Error ' + res.status); return; }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      alive();
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        const line = p.split('\n').find((l) => l.startsWith('data: ')); if (!line) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (mine !== currentTurn) return;
+        if (ev.type === 'ignored') { setMode('listening', "Didn't catch that"); return; }
+        if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }
+        if (ev.type === 'status') setMode(ev.startup ? 'startup' : 'thinking', (ev.startup ? 'Starting up: ' : '') + ev.text.charAt(0).toUpperCase() + ev.text.slice(1));
+        if (ev.type === 'text') { if (!reply.childElementCount) addPiece(ev.text); add('agent', ev.text); }
+        if (ev.type === 'audio') { queue.push({ url: ev.url, span: addPiece(ev.text) }); playNext(mine); }
+        if (ev.type === 'error') { setMode('error', ev.text); }
+      }
+    }
+  } catch (e) { setMode('error', e.name === 'AbortError' ? 'The answer went quiet; listening again' : e.message); }
+  finally {
+    clearTimeout(quiet);
+    if (mine === currentTurn) {
+      await whilePlaying();
+      busy = false;
+      if (on) earOn(); else setMode('off', 'Paused');
+    }
+  }
+}
+// Some browsers reset the rate when a new src loads, so it is re-applied per piece and on metadata.
+const applyRate = () => { try { player.preservesPitch = player.mozPreservesPitch = player.webkitPreservesPitch = true; player.playbackRate = speechRate; } catch {} };
+for (const ev of ['loadedmetadata', 'canplay', 'play', 'playing']) player.addEventListener(ev, applyRate);   // iOS drops the rate at a few of these points
+// sentence audio plays in order as it arrives; the mic stays off until the last piece ends
+function playNext(mine) {
+  if (playing || !queue.length || mine !== currentTurn) return;
+  playing = true; setMode('speaking', 'Speaking');
+  const piece = queue.shift();
+  if (nowSpan) { nowSpan.classList.remove('now'); nowSpan.classList.add('done'); }
+  nowSpan = piece.span; nowSpan.classList.add('now'); nowSpan.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  player.src = piece.url; applyRate();
+  const finish = () => { playing = false; player.onended = player.onerror = null; if (!queue.length && nowSpan) { nowSpan.classList.remove('now'); nowSpan.classList.add('done'); nowSpan = null; } playNext(mine); };
+  player.onended = finish; player.onerror = finish;
+  player.play().catch(() => { setMode('speaking', 'Tap the orb to hear the reply'); orb.onclick = () => { orb.onclick = orbTap; player.play(); }; });
+}
+const whilePlaying = () => new Promise((resolve) => { const tick = () => (playing || queue.length ? setTimeout(tick, 120) : resolve()); tick(); });
+function interrupt() { if (!busy) return; currentTurn++; queue = []; player.pause(); playing = false; busy = false; if (nowSpan) { nowSpan.classList.remove('now'); nowSpan = null; } earOn(); fetch('/api/skip', { method: 'POST' }).catch(() => {}); }
+// a tap on the orb: while busy it interrupts; in manual mode it starts/sends this utterance;
+// otherwise it's a gesture that resumes the audio pipeline if iOS paused it (never done automatically)
+async function orbTap() {
+  if (busy) return interrupt();
+  if (!on) return;
+  if (voiceMode === 'manual') return toggleDictate();
+  try { const c = vad?.audioContext; if (c && c.state !== 'running') await c.resume(); } catch {}
+  try { await vad?.start(); } catch {}
+  setMode('listening', 'Listening');
+}
+orb.onclick = orbTap;
+$('skip').onclick = interrupt;
+$('pause').onclick = () => {
+  if (!playing) return;
+  setPaused(!paused);
+  if (paused) { player.pause(); modeText.textContent = 'Paused'; } else { player.play(); modeText.textContent = 'Speaking'; }
+};
+
+// ---- the call button and the mic
+const setBigIcon = (stopping) => { $('bigPlayIcon').style.display = stopping ? 'none' : ''; $('bigStopIcon').style.display = stopping ? '' : 'none'; big.setAttribute('aria-label', stopping ? 'End conversation' : 'Start conversation'); };
+async function start() {
+  unlock(); keepAwake();
+  big.disabled = true;
+  try { setMode('thinking', 'Opening the microphone'); await startEar(); }
+  catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); hint.textContent = 'Allow the microphone for this page, then tap Start again.'; big.disabled = false; return; }
+  on = true; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
+  setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening'); touch();
+}
+function end() { clearTimeout(idleTimer); on = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
+big.onclick = () => (on ? end() : start());
+mute.onclick = () => { muted = !muted; mute.classList.toggle('on', muted); mute.setAttribute('aria-pressed', String(muted)); mute.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone'); $('micSlash').style.display = muted ? '' : 'none'; if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
+earMute.onclick = () => { earMuted = !earMuted; player.muted = earMuted; earMute.classList.toggle('on', earMuted); earMute.setAttribute('aria-pressed', String(earMuted)); earMute.setAttribute('aria-label', earMuted ? 'Unmute earphone' : 'Mute earphone'); $('earSlash').style.display = earMuted ? '' : 'none'; };
+// Opening the transcript pushes a history entry so the system/browser back action closes it
+// instead of leaving the page — standalone (home-screen) iOS has no browser chrome at all, so
+// there is no edge-swipe gesture to catch that the same way a normal Safari tab would; the
+// touch handler further down covers that case by watching for a left-edge swipe directly.
+let historyPushed = false;
+const openHistory = () => { $('history').classList.add('open'); logEl.scrollTop = logEl.scrollHeight; if (!historyPushed) { history.pushState({ voiceHistory: true }, ''); historyPushed = true; } };
+const closeHistory = (viaPopstate) => { $('history').classList.remove('open'); if (historyPushed) { historyPushed = false; if (!viaPopstate) history.back(); } };
+window.addEventListener('popstate', () => { if ($('history').classList.contains('open')) closeHistory(true); });
+$('refresh').onclick = () => location.reload();
+$('transcript').onclick = openHistory;
+$('close').onclick = () => { closeHistory(false); $('transcript').focus(); };
+document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if ($('history').classList.contains('open')) $('close').click(); if ($('settingsPanel').classList.contains('open')) closeSettings(); });
+
+// ---- settings: one field for now — listening mode (auto/manual), remembered per device
+const applyVoiceModeButtons = () => { document.querySelectorAll('.seg-mode').forEach((b) => { const active = b.dataset.mode === voiceMode; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
+const setVoiceMode = (m) => {
+  voiceMode = m === 'manual' ? 'manual' : 'auto';
+  try { localStorage.setItem('voiceMode', voiceMode); } catch {}
+  applyVoiceModeButtons();
+  if (dictating) { dictating = false; dictateFrames = []; }
+  if (on && !busy) setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');
+};
+applyVoiceModeButtons();
+document.querySelectorAll('.seg-mode').forEach((b) => { b.onclick = () => setVoiceMode(b.dataset.mode); });
+const applyTextFlowButtons = () => { document.querySelectorAll('.seg-text').forEach((b) => { const active = b.dataset.text === textFlow; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
+const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant'; try { localStorage.setItem('textFlow', textFlow); } catch {} applyTextFlowButtons(); };
+const applyRateButtons = () => { document.querySelectorAll('.seg-rate').forEach((b) => { const active = Number(b.dataset.rate) === speechRate; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
+// The same number governs the machine's own speaker (what the TV plays), so a change here is
+// pushed to the server, and the server's value wins on load — the two never drift apart.
+const setSpeechRate = (r, push = true) => {
+  r = Number(r); speechRate = RATES.includes(r) ? r : 1;
+  try { localStorage.setItem('speechRate', String(speechRate)); } catch {}
+  applyRateButtons(); applyRate();
+  if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {});
+};
+applyRateButtons();
+fetch('/api/state').then((r) => r.json()).then((s) => { const r = Number(s?.rate); if (RATES.includes(r) && r !== speechRate) setSpeechRate(r, false); }).catch(() => {});
+document.querySelectorAll('.seg-rate').forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
+applyTextFlowButtons();
+document.querySelectorAll('.seg-text').forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
+const openSettings = () => $('settingsPanel').classList.add('open');
+const closeSettings = () => $('settingsPanel').classList.remove('open');
+$('settingsBtn').onclick = openSettings;
+$('settingsClose').onclick = closeSettings;
+$('settingsPanel').addEventListener('click', (e) => { if (e.target === $('settingsPanel')) closeSettings(); });
+$('send').onclick = () => { closeHistory(false); sendText($('text').value); };
+$('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); closeHistory(false); sendText($('text').value); } });
+// Left-edge swipe to close, matching iOS's own back gesture (which standalone mode has no
+// chrome to provide): must start within 24px of the screen edge, then move right.
+(() => {
+  let sx = 0, sy = 0, tracking = false;
+  const hist = $('history');
+  hist.addEventListener('touchstart', (e) => { const t = e.touches[0]; tracking = t.clientX < 24; sx = t.clientX; sy = t.clientY; }, { passive: true });
+  hist.addEventListener('touchmove', (e) => {
+    if (!tracking) return;
+    const t = e.touches[0];
+    if (t.clientX - sx > 80 && Math.abs(t.clientY - sy) < 60) { tracking = false; closeHistory(false); }
+  }, { passive: true });
+  hist.addEventListener('touchend', () => { tracking = false; });
+})();
+$('reset').onclick = async () => { await fetch('/api/reset', { method: 'POST' }); logEl.innerHTML = ''; reply.textContent = ''; reply.style.display = 'none'; heard.classList.add('hidden'); hint.style.display = ''; hint.textContent = 'New conversation. The first answer takes a minute while I wake up.'; };
+
+fetch('/api/transcript').then((r) => r.json()).then((rows) => { for (const row of rows.slice(-20)) { add('user', row.user); add('agent', row.spoken); } }).catch(() => {});
+fetch('/api/state').then((r) => r.json()).then((s) => { if (s.voiceInput === false) hint.textContent = 'Voice input is off on the server (whisper not running). Typing still works.'; }).catch(() => {});
+if (!window.vad) { setMode('error', 'Voice library failed to load'); hint.textContent = 'The speech-detection library did not load. Check the connection and reload.'; }
+</script>
+</body>
+</html>

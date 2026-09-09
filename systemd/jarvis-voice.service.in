@@ -1,0 +1,18 @@
+[Unit]
+Description=Jarvis voice channel (phone -> whisper -> claude -> edge-tts)
+Documentation=file://__PLUGIN_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__APP_DIR__
+# Every machine-specific value lives here. No dash: a missing config file is a
+# hard failure rather than a service that silently starts with wrong defaults.
+EnvironmentFile=__CONFIG_FILE__
+ExecStart=__NODE__ __APP_DIR__/server.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

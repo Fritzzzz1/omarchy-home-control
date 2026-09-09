@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<meta name="theme-color" content="#101313">
+<meta name="apple-mobile-web-app-title" content="Home">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Home · voice</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101313; color: #eeefe9; font-family: Heebo, system-ui, sans-serif; }
+  form { width: min(92vw, 360px); display: grid; gap: 14px; }
+  h1 { font-size: 32px; font-weight: 500; margin: 0 0 6px; letter-spacing: .02em; }
+  p { margin: 0; color: #929c96; font-size: 14px; }
+  input { font: inherit; font-size: 18px; padding: 14px; border-radius: 16px; border: 1px solid #343d37; background: #191d1c; color: inherit; }
+  input:focus { outline: none; border-color: #c9ebbd; }
+  button { font: inherit; font-size: 17px; padding: 14px; border-radius: 16px; border: 0; background: #c9ebbd; color: #203123; }
+</style>
+</head>
+<body>
+<form method="post" action="/login" autocomplete="off">
+  <p style="color:#c9ebbd;letter-spacing:3px;font-size:11px">A SPACE TO CONNECT</p>
+  <h1>Welcome home.</h1>
+  <p>Enter your passphrase. Make yourself comfortable.</p>
+  <input name="key" type="password" placeholder="Passphrase" aria-label="Passphrase" required autofocus autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button type="submit">Enter</button>
+</form>
+</body>
+</html>

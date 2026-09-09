@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "jarvis.voice",
+  "name": "Jarvis Voice",
+  "version": "1.0.0",
+  "author": "Liran Friedman",
+  "license": "MIT",
+  "description": "Talk to the agent on this machine from your phone. Adds a bar widget for the voice channel's service, and ships the installer for the service itself.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Jarvis",
+    "description": "Shows whether the voice channel is up; click to open the phone URL, right-click to start or stop it.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "unit": "jarvis-voice.service",
+      "refreshIntervalSec": 10,
+      "showLabel": false
+    },
+    "schema": [
+      {
+        "key": "unit",
+        "type": "string",
+        "label": "systemd user unit",
+        "defaultValue": "jarvis-voice.service"
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Status poll interval (seconds)",
+        "min": 2,
+        "max": 600,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show the word \"Jarvis\" next to the icon",
+        "defaultValue": false
+      }
+    ]
+  }
+}
