@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const label = process.env.VOICE_LABEL || 'voice';
 const state = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/home-control/state', label);
-const port = Number(process.env.MONITOR_PORT || 4456);
+const port = Number(process.env.MONITOR_PORT || 4458);
 // The voice server the dashboard reads from. Upstream hardcoded :4455 here,
 // so a server on any other port was invisible to the monitor.
 const voiceOrigin = `http://${process.env.VOICE_HOST || '127.0.0.1'}:${Number(process.env.VOICE_PORT || 4455)}`;

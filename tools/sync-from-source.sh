@@ -1,6 +1,6 @@
 #!/bin/bash
 # Re-vendor app/ from a working voice-chat checkout, then re-apply the
-# packaging patch. Read-only with respect to the source: it only copies out.
+# portability patch. Read-only with respect to the source: it only copies out.
 #
 #   tools/sync-from-source.sh ~/dev/voice-chat
 
@@ -11,12 +11,12 @@ SRC="$(cd "$SRC" && pwd)"
 
 [[ -f $SRC/server.mjs ]] || { echo "no server.mjs in $SRC" >&2; exit 1; }
 
-FILES=(index.html login.html mic.html monitor.html monitor.mjs server.mjs tts.py
+FILES=(index.html login.html monitor.html monitor.mjs server.mjs tts.py
   voice-mode.md favicon-32.png icon-192.png icon-512.png
   apple-touch-icon.png icon-source.svg)
 # manifest.json is deliberately absent: like voice-mode.md.in, the PWA manifest
 # is now a hand-maintained template (app/manifest.json.in) rendered by install.sh
-# per machine, not vendored from source.
+# per machine, not vendored from source. mic.html: dropped, not vendored either.
 
 echo "Vendoring from $SRC"
 for f in "${FILES[@]}"; do
@@ -24,14 +24,16 @@ for f in "${FILES[@]}"; do
 done
 [[ -d $SRC/tests ]] && rm -rf "$PLUGIN_DIR/app/tests" && cp -a "$SRC/tests" "$PLUGIN_DIR/app/tests" && echo "  tests/"
 
-# Symlinks anywhere in a plugin folder make omarchy-plugin-validate refuse it.
+# install.sh copies app/ with `cp -a`, which preserves symlinks as symlinks — one
+# pointing at a path that only exists on this dev machine would silently break
+# on whatever machine actually installs Home Control.
 if find "$PLUGIN_DIR/app" -type l -print -quit | grep -q .; then
-  echo "error: symlinks landed in app/; Omarchy will reject the plugin" >&2
+  echo "error: symlinks landed in app/; they won't survive being copied to another machine" >&2
   exit 1
 fi
 
 echo
-echo "Re-applying the packaging patch:"
+echo "Re-applying the portability patch:"
 python3 "$PLUGIN_DIR/tools/parameterise.py"
 
 echo

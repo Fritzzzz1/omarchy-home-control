@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Apply the packaging patch to app/ — the only differences between the vendored
-payload and the upstream voice-chat app.
+"""Apply the portability patch to the vendored files under app/ — the only
+differences between them and the upstream voice-chat app. app/ also has a few
+files original to this repo (request-body.mjs, delegation.on.md,
+delegation.off.md, manifest.json.in, setup.html) that aren't vendored from
+anywhere and so aren't touched by this script.
 
 Every edit here exists for one reason: upstream hardcodes a value that belongs to
 one particular machine and offers no way to override it. Each replacement keeps
 the original value as the fallback, so behaviour on the original machine is
 unchanged; it just becomes overridable.
 
-Run from the plugin root:  python3 tools/parameterise.py [--check]
+Run from the repo root:  python3 tools/parameterise.py [--check]
 It is idempotent: it looks for the post-state before the pre-state, so edits
 that wrap or extend what they match are not applied twice.
 """
@@ -16,6 +19,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP = ROOT / "app"
+HOME = str(pathlib.Path.home())  # this machine's home dir, not a literal shipped in source
 CHECK = "--check" in sys.argv
 
 # (file, old, new, why)
@@ -71,6 +75,22 @@ EDITS = [
     ),
     (
         "server.mjs",
+        "const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';",
+        "const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';\n"
+        "// Off means: a page-shaped reply is still de-markdowned (stripMarkdown), just not sent to\n"
+        "// Haiku to be reworded for the ear first. That second call is real extra cost, not free\n"
+        "// polish - asked about at install time, see VOICE_SPEECH_REWRITE in config.env.\n"
+        "const SPEECH_REWRITE_ON = process.env.VOICE_SPEECH_REWRITE !== 'off';",
+        "the speech-rewrite pass was unconditional - a second real API call with no way to skip it",
+    ),
+    (
+        "server.mjs",
+        "if (looksLikePage(turn.text)) { send({ type: 'status', text: 'fitting for voice' }); spoken = stripMarkdown(await rewriteForSpeech(turn.text, lang)); }",
+        "if (SPEECH_REWRITE_ON && looksLikePage(turn.text)) { send({ type: 'status', text: 'fitting for voice' }); spoken = stripMarkdown(await rewriteForSpeech(turn.text, lang)); }",
+        "gate the extra Haiku call behind the install-time choice",
+    ),
+    (
+        "server.mjs",
         "const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), 'dev', 'nanoclaw-v2', 'data', 'models', 'ggml-large-v3-turbo.bin');",
         "const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'home-control', 'models', 'ggml-large-v3-turbo.bin');",
         "the default pointed inside an unrelated project of the original author's",
@@ -112,18 +132,6 @@ EDITS = [
         "// request-body.mjs owns bounded request reads.",
         "an interrupted or oversized upload must settle instead of holding the voice turn busy",
     ),
-    (
-        "server.mjs",
-        "    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') "
-        "return micChunk(req, res);",
-        "    // Awaited, not just returned: micChunk reads a bounded body that can reject when a\n"
-        "    // phone vanishes mid-chunk, and a returned promise settles outside this try — an\n"
-        "    // unhandled rejection that would take the whole voice server down with it.\n"
-        "    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') "
-        "return await micChunk(req, res);",
-        "now that a bounded read can reject, the only handler dispatched outside the "
-        "request try/catch has to be awaited inside it",
-    ),
     # ---- monitor.mjs --------------------------------------------------------
     (
         "monitor.mjs",
@@ -135,7 +143,13 @@ EDITS = [
     (
         "monitor.mjs",
         "const port = Number(process.env.MONITOR_PORT || 4456);",
-        "const port = Number(process.env.MONITOR_PORT || 4456);\n"
+        "const port = Number(process.env.MONITOR_PORT || 4458);",
+        "4456 collided with local whisper's default port",
+    ),
+    (
+        "monitor.mjs",
+        "const port = Number(process.env.MONITOR_PORT || 4458);",
+        "const port = Number(process.env.MONITOR_PORT || 4458);\n"
         "// The voice server the dashboard reads from. Upstream hardcoded :4455 here,\n"
         "// so a server on any other port was invisible to the monitor.\n"
         "const voiceOrigin = `http://${process.env.VOICE_HOST || '127.0.0.1'}:${Number(process.env.VOICE_PORT || 4455)}`;",
@@ -162,7 +176,7 @@ EDITS = [
     # ---- tts.py -------------------------------------------------------------
     (
         "tts.py",
-        "#!/usr/bin/env -S /home/fritzzzz/.local/share/context-agent/venv/bin/python",
+        f"#!/usr/bin/env -S {HOME}/.local/share/context-agent/venv/bin/python",
         "#!/usr/bin/env python3",
         "the shipped shebang named one machine's venv; install.sh rewrites this line to the venv it built",
     ),
@@ -185,6 +199,46 @@ EDITS = [
         '"en-US-AndrewMultilingualNeural"',
         'os.environ.get("TTS_VOICE", "en-US-AndrewMultilingualNeural")',
         "default voice was fixed",
+    ),
+    # ---- index.html / login.html --------------------------------------------
+    # iOS Safari's home-screen label comes from apple-mobile-web-app-title, ahead
+    # of the PWA manifest's own name — install.sh renders both from the same
+    # PWA_NAME so a second machine on the same phone isn't also called "Home".
+    (
+        "index.html",
+        '<meta name="apple-mobile-web-app-title" content="Home">',
+        '<meta name="apple-mobile-web-app-title" content="__PWA_NAME__">',
+        "the home-screen label needs to match the manifest's name",
+    ),
+    (
+        "index.html",
+        "<title>Home · voice</title>",
+        "<title>__PWA_NAME__ · voice</title>",
+        "the tab/window title was fixed to the original machine's name",
+    ),
+    (
+        "login.html",
+        '<meta name="apple-mobile-web-app-title" content="Home">',
+        '<meta name="apple-mobile-web-app-title" content="__PWA_NAME__">',
+        "the home-screen label needs to match the manifest's name",
+    ),
+    (
+        "login.html",
+        "<title>Home · voice</title>",
+        "<title>__PWA_NAME__ · voice</title>",
+        "the tab/window title was fixed to the original machine's name",
+    ),
+    (
+        "index.html",
+        "#reply:before{content:'✺  CLAUDE';",
+        "#reply:before{content:'✺  __AGENT__';",
+        "the reply label was hardcoded to one provider's name",
+    ),
+    (
+        "index.html",
+        ".msg.agent:before{content:'✺ CLAUDE';",
+        ".msg.agent:before{content:'✺ __AGENT__';",
+        "same label, the history view's copy of it",
     ),
 ]
 

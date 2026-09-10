@@ -1,13 +1,14 @@
 #!/bin/bash
 # home-control-ctl — the one place that knows how Home Control is wired on this machine.
 #
-# Both the bar widget and a human use this, so the QML stays dumb: it shells out
-# to `home-control-ctl status --json` and renders whatever comes back.
+# status --json exists so other tools can shell out to this instead of re-deriving how the
+# service is wired themselves.
 
 set -uo pipefail
 
 CONFIG_FILE="${HOME_CONTROL_CONFIG:-$HOME/.config/home-control/config.env}"
 UNIT="${HOME_CONTROL_UNIT:-home-control.service}"
+DASHBOARD_UNIT="${HOME_CONTROL_DASHBOARD_UNIT:-home-control-dashboard.service}"
 
 # The service format is deliberately plain KEY=VALUE rather than shell code:
 # owner names and project paths commonly contain spaces, and a diagnostic command
@@ -20,7 +21,7 @@ load_config() {
     [[ $line =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     case "$key" in
-      PATH|VOICE_ROOT|VOICE_LABEL|VOICE_STATE|VOICE_TOKEN|VOICE_PORT|VOICE_HOST|TTS_PORT|WHISPER_URL|WHISPER_MODEL|VOICE_LOCAL_PLAYER|VOICE_OWNER|VOICE_EDGE_TTS|VOICE_PEER_DELEGATION|VOICE_MODEL|VOICE_EFFORT|VOICE_REWRITE_MODEL|VOICE_VOICE_EN|VOICE_VOICE_HE|HOME_CONTROL_TAILNET_HOST|HOME_CONTROL_TAILNET_PORT|HOME_CONTROL_TTS_PYTHON|HOME_CONTROL_APP_DIR)
+      PATH|VOICE_ROOT|VOICE_LABEL|VOICE_STATE|VOICE_TOKEN|VOICE_PORT|VOICE_HOST|TTS_PORT|MONITOR_PORT|WHISPER_URL|WHISPER_MODEL|VOICE_LOCAL_PLAYER|VOICE_OWNER|VOICE_EDGE_TTS|VOICE_SPEECH_REWRITE|VOICE_PEER_DELEGATION|VOICE_MODEL|VOICE_EFFORT|VOICE_REWRITE_MODEL|VOICE_VOICE_EN|VOICE_VOICE_HE|HOME_CONTROL_TAILNET_HOST|HOME_CONTROL_TAILNET_PORT|HOME_CONTROL_TTS_PYTHON|HOME_CONTROL_APP_DIR)
         printf -v "$key" '%s' "$value"; export "$key" ;;
     esac
   done < "$CONFIG_FILE"
@@ -28,6 +29,7 @@ load_config() {
 load_config
 
 VOICE_PORT="${VOICE_PORT:-4455}"
+MONITOR_PORT="${MONITOR_PORT:-4458}"
 HOME_CONTROL_TAILNET_HOST="${HOME_CONTROL_TAILNET_HOST:-}"
 HOME_CONTROL_TAILNET_PORT="${HOME_CONTROL_TAILNET_PORT:-8443}"
 
@@ -41,6 +43,7 @@ url() {
 
 # `is-active` exits non-zero for anything but "active"; we want the word, not the code.
 state() { systemctl --user is-active "$UNIT" 2>/dev/null || true; }
+dashboard_state() { systemctl --user is-active "$DASHBOARD_UNIT" 2>/dev/null || true; }
 
 # Any HTTP status means the server answered. The login gate replies 302/401 to an
 # unauthenticated probe, so `curl -f` would call a perfectly healthy Home Control dead.
@@ -69,16 +72,26 @@ USAGE
 case "${1:-status}" in
 status)
   s=$(state)
+  d=$(dashboard_state)
   if [[ ${2:-} == --json ]]; then
     jq -nc --arg state "${s:-unknown}" --arg url "$(url)" \
       --argjson reachable "$(reachable)" --arg unit "$UNIT" \
-      '{unit:$unit, state:$state, reachable:$reachable, url:$url}'
+      --arg dashboard_state "${d:-unknown}" --arg dashboard_url "http://127.0.0.1:$MONITOR_PORT" \
+      '{unit:$unit, state:$state, reachable:$reachable, url:$url,
+        dashboard_unit:"'"$DASHBOARD_UNIT"'", dashboard_state:$dashboard_state, dashboard_url:$dashboard_url}'
   else
     printf 'unit       %s\nstate      %s\nreachable  %s\nurl        %s\n' \
       "$UNIT" "${s:-unknown}" "$(reachable)" "$(url)"
+    printf 'dashboard  %s (%s)   http://127.0.0.1:%s\n' \
+      "$DASHBOARD_UNIT" "${d:-unknown}" "$MONITOR_PORT"
   fi
   ;;
-start | stop | enable | disable) systemctl --user "$1" "$UNIT" ;;
+start | stop | enable | disable)
+  # The dashboard unit is BindsTo=$UNIT, so stopping $UNIT stops it too — but
+  # systemd never starts a bound unit back up on its own, only stops it. Drive
+  # both explicitly so the dashboard doesn't end up silently down after this.
+  systemctl --user "$1" "$UNIT" "$DASHBOARD_UNIT"
+  ;;
 restart)
   # Deliberately loud: this is the one destructive thing here.
   if [[ ${2:-} != --force && -t 0 ]]; then
@@ -86,6 +99,8 @@ restart)
     [[ $a == [yY]* ]] || { echo "aborted"; exit 1; }
   fi
   systemctl --user restart "$UNIT"
+  # BindsTo= stopped the dashboard along with $UNIT but won't start it back up.
+  systemctl --user restart "$DASHBOARD_UNIT"
   ;;
 logs) shift; journalctl --user -u "$UNIT" "$@" ;;
 url) url ;;
@@ -119,6 +134,7 @@ doctor)
   command -v tailscale >/dev/null && say "tailscale" "$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "unknown"')" \
     || say "tailscale" "not installed"
   s=$(state); say "unit" "${s:-unknown}"
+  d=$(dashboard_state); say "dashboard unit" "${d:-unknown}"
   exit $fail
   ;;
 -h | --help | help) usage ;;

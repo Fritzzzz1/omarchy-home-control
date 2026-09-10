@@ -30,7 +30,11 @@ const OWNER = process.env.VOICE_OWNER || 'the user';
 const MODEL = process.env.VOICE_MODEL || '';
 const EFFORT = process.env.VOICE_EFFORT || '';
 const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';
-// His word (2026-09-03): the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
+// Off means: a page-shaped reply is still de-markdowned (stripMarkdown), just not sent to
+// Haiku to be reworded for the ear first. That second call is real extra cost, not free
+// polish - asked about at install time, see VOICE_SPEECH_REWRITE in config.env.
+const SPEECH_REWRITE_ON = process.env.VOICE_SPEECH_REWRITE !== 'off';
+// By design: the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebFetch', 'WebSearch',
   'Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(date:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(find:*)', 'Bash(grep:*)',
@@ -318,7 +322,7 @@ setInterval(() => {
 const LOCAL_PLAYER = process.env.VOICE_LOCAL_PLAYER || 'mpv';
 // Speaking speed. The phone can only speed up its own <audio>; this is the same setting applied
 // to the machine's own output — the one the TV plays — so a tap on the phone changes what the
-// room hears too. On disk, so a restart doesn't quietly drop back to 1x. (Liran, 09-09)
+// room hears too. On disk, so a restart doesn't quietly drop back to 1x.
 const RATE_FILE = path.join(STATE, 'speech-rate.json');
 const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 1.75];
 let speechRate = (() => { const r = Number(readJson(RATE_FILE, {}).rate); return SPEECH_RATES.includes(r) ? r : 1; })();
@@ -468,7 +472,7 @@ const handleTurn = async (req, res) => {
     let spoken = await speaker.finish();
     if (!spoken) {
       spoken = stripMarkdown(turn.text);
-      if (looksLikePage(turn.text)) { send({ type: 'status', text: 'fitting for voice' }); spoken = stripMarkdown(await rewriteForSpeech(turn.text, lang)); }
+      if (SPEECH_REWRITE_ON && looksLikePage(turn.text)) { send({ type: 'status', text: 'fitting for voice' }); spoken = stripMarkdown(await rewriteForSpeech(turn.text, lang)); }
       if (!spoken) spoken = lang === 'he' ? 'סיימתי, אבל לא יצא לי טקסט להקריא.' : 'Done, but I have no text to read back.';
       const groups = sentenceGroups(spoken);
       const renders = groups.map((g) => speak(g, hebrewShare(spoken) > 0.4 ? 'he' : 'en'));
@@ -492,43 +496,6 @@ const handleTurn = async (req, res) => {
     busy = false;
     res.end();
   }
-};
-
-// ---------- phone-as-mic: raw continuous audio -> a virtual mic device meeting apps can pick.
-// Nothing to do with the agent turn above: no whisper, no claude, no tts. Just a pipe.
-const MIC_SINK = process.env.MIC_SINK || 'phone_mic';
-let micProc = null;
-const ensureMicSink = () => {
-  try {
-    const list = execSync('pactl list short sinks').toString();
-    if (!list.split('\n').some((l) => l.split('\t')[1] === MIC_SINK)) {
-      execSync(`pactl load-module module-null-sink sink_name=${MIC_SINK} sink_properties=device.description=Phone_Mic`);
-      log(`mic: created virtual sink ${MIC_SINK}`);
-    }
-  } catch (e) { log(`mic: sink setup failed: ${e.message}`); }
-};
-const startMic = (rate) => {
-  ensureMicSink();
-  if (micProc) { try { micProc.kill(); } catch {} }
-  const hz = Number(rate) || 48000;
-  const proc = spawn('paplay', ['--raw', '--format=s16le', `--rate=${hz}`, '--channels=1', `--device=${MIC_SINK}`], { stdio: ['pipe', 'ignore', 'pipe'] });
-  micProc = proc;
-  proc.stderr.on('data', (d) => log(`mic: paplay: ${d.toString().trim()}`));
-  // guard: an old process exiting late (killed by a newer start) must not null out a process that replaced it
-  proc.on('exit', (code) => { log(`mic: paplay exited (${code})`); if (micProc === proc) micProc = null; });
-  log(`mic: started -> device=${MIC_SINK} rate=${hz}`);
-};
-const stopMic = () => {
-  if (!micProc) return;
-  try { micProc.stdin.end(); } catch {}
-  try { micProc.kill(); } catch {}
-  micProc = null;
-  log('mic: stopped');
-};
-const micChunk = async (req, res) => {
-  const body = await readBody(req, 2_000_000);
-  if (micProc?.stdin.writable) { try { micProc.stdin.write(body); } catch (e) { log(`mic: write failed: ${e.message}`); } }
-  json(res, 200, { ok: true });
 };
 
 const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
@@ -569,17 +536,6 @@ const server = http.createServer(async (req, res) => {
       return html(res, 'login.html', 401);
     }
     if (url.pathname === '/') return html(res, 'index.html');
-    if (url.pathname === '/mic') return html(res, 'mic.html');
-    if (url.pathname === '/api/mic-start' && req.method === 'POST') {
-      const body = readJsonBody((await readBody(req)).toString('utf8'));
-      startMic(body.rate);
-      return json(res, 200, { ok: true, sink: MIC_SINK });
-    }
-    // Awaited, not just returned: micChunk reads a bounded body that can reject when a
-    // phone vanishes mid-chunk, and a returned promise settles outside this try — an
-    // unhandled rejection that would take the whole voice server down with it.
-    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') return await micChunk(req, res);
-    if (url.pathname === '/api/mic-stop' && req.method === 'POST') { stopMic(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
