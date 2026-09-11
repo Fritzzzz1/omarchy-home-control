@@ -136,6 +136,23 @@ const tryLogin = (key, res, req) => {
   return true;
 };
 
+// ---------- the event log: every output event, from a live turn or a delayed relay reply,
+// in one ordered, bounded list. This is the reliability backbone behind /api/events — a phone
+// that was backgrounded (or asleep) polls it and catches up on anything the per-turn SSE
+// stream never reached it, including a relay reply that lands after its own turn already
+// closed. Kept small so a long-running process never grows it without bound: capped by count
+// and by age, whichever trims first.
+const EVENT_LOG_MAX = 500;
+const EVENT_LOG_MS = 30 * 60 * 1000;
+let eventLog = [];
+let eventSeq = 0;
+const logEvent = (turnId, source, ev) => {
+  eventSeq += 1;
+  eventLog.push({ id: eventSeq, at: new Date().toISOString(), turnId, source, ...ev });
+  const cutoff = Date.now() - EVENT_LOG_MS;
+  while (eventLog.length > EVENT_LOG_MAX || (eventLog.length && Date.parse(eventLog[0].at) < cutoff)) eventLog.shift();
+};
+
 // ---------- claude ----------
 const claudeSession = () => readJson(CLAUDE_SESSION_FILE, { id: null, turns: 0 });
 const saveClaudeSession = (s) => writeJson(CLAUDE_SESSION_FILE, s);
@@ -176,12 +193,20 @@ const spawnClaude = () => {
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
       if (turnHandler) { turnHandler(ev); continue; }
-      // No turn is waiting (another session woke the agent): speak its reply anyway instead of dropping it.
+      // No turn is waiting (another session woke the agent): speak its reply anyway instead of
+      // dropping it (never silently lost — the room hears it even if nobody's phone is around),
+      // and log the same rendered events with source: 'relay' so a polling phone picks them up.
       if (ev.type === 'result' && !ev.is_error && ev.result) {
+        const relayTurnId = `relay-${crypto.randomBytes(6).toString('hex')}`;
         (async () => {
-          const groups = sentenceGroups(stripMarkdown(ev.result));
+          const spoken = stripMarkdown(ev.result);
+          const groups = sentenceGroups(spoken);
           const renders = groups.map((g) => speak(g).catch(() => null));
-          for (let i = 0; i < renders.length; i++) { const a = await renders[i]; if (a) playLocally(a.file, i, groups[i]); }
+          for (let i = 0; i < renders.length; i++) {
+            const a = await renders[i];
+            if (a) { playLocally(a.file, i, groups[i]); logEvent(relayTurnId, 'relay', { type: 'audio', url: a.url, index: i, text: groups[i] }); }
+          }
+          logEvent(relayTurnId, 'relay', { type: 'text', text: spoken, full: ev.result });
         })();
       }
     }
@@ -484,7 +509,12 @@ const handleTurn = async (req, res) => {
   busy = true;
   resetSpokenState();
   lastTurnAt = Date.now();
-  const send = sse(res);
+  const turnId = crypto.randomBytes(6).toString('hex');
+  const sendRaw = sse(res);
+  // Every event the phone gets live over this turn's SSE stream is also appended to the
+  // shared event log (source: 'phone') so a phone that reconnects later — or another device
+  // polling /api/events — can catch up on the same turn.
+  const send = (ev) => { sendRaw(ev); logEvent(turnId, 'phone', ev); };
   const started = Date.now();
   try {
     let text, lang;
@@ -587,6 +617,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
       return json(res, 200, lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));
+    }
+    // The reliability backbone: a phone polls this while foregrounded and catches up on
+    // anything it missed — most importantly a relay reply that landed after its own turn's
+    // SSE connection had already closed. `after` is the highest event id already seen; with
+    // none given (first load), the recent tail of the log is returned instead of nothing.
+    if (url.pathname === '/api/events' && req.method === 'GET') {
+      const after = Number(url.searchParams.get('after'));
+      const list = Number.isFinite(after) && after > 0 ? eventLog.filter((e) => e.id > after) : eventLog.slice(-50);
+      return json(res, 200, { events: list, cursor: eventLog.length ? eventLog[eventLog.length - 1].id : after || 0 });
     }
     if (url.pathname.startsWith('/audio/')) {
       const file = path.join(AUDIO_DIR, path.basename(url.pathname));
