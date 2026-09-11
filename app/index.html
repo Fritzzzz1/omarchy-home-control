@@ -167,10 +167,8 @@ const setMode = (cls, text) => {
 };
 const setPaused = (p) => { paused = p; $('pause').setAttribute('aria-label', p ? 'Resume reply' : 'Pause reply'); $('pauseIcon').style.display = p ? 'none' : ''; $('playIcon').style.display = p ? '' : 'none'; };
 const add = (cls, body) => { const d = document.createElement('div'); d.className = 'msg ' + cls; d.dir = 'auto'; d.textContent = body; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; return d; };
-// The one render path for "here is the agent's finished reply as text", used identically
-// whether the text arrived live (the turn's own 'text' event) or was caught up after the fact
-// (a relay reply, or this phone's own turn found via /api/events). Always the raw/full text —
-// not the cleaned-for-the-ear version — in both the main view and the drawer.
+// The only place a reply's text gets rendered, live or caught up — don't split this per path.
+// Always the raw/full text, not the cleaned-for-the-ear version.
 const renderTurnText = (full) => { if (!reply.childElementCount) addPiece(full); add('agent', full); };
 const showHeard = (text) => { hint.style.display = 'none'; heard.textContent = text; heard.classList.remove('hidden', 'open'); reply.textContent = ''; reply.style.display = 'none'; exchange.scrollTop = 0; };
 heard.onclick = () => heard.classList.toggle('open');
