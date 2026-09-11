@@ -125,6 +125,11 @@ Install the server, chosen client(s), both dashboards, rendered config, and syst
 services, using distinct configurable ports for the voice server, transcription, TTS, and
 dashboard. Use the agent folder chosen in §2 as `VOICE_ROOT`.
 
+Home Control runs from this clone — nothing is copied. Install writes only `config.env`, the
+systemd units, and two files git ignores (`app/voice-mode.md`, `app/manifest.json`). Updating
+later is `git pull` then `home-control-ctl restart`; switching branches here changes the running
+app too.
+
 `install.sh`/`uninstall.sh` can do this mechanical part for you — once you know the real values,
 `./install.sh --whisper-model ... --pwa-name ...` is there to help, not required. Use it if it
 fits what you've learned about this machine; adapt or skip pieces of it if it doesn't.

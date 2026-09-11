@@ -80,6 +80,12 @@ fi
 echo "== Command"
 rm_path "$BIN_LINK"
 
+echo "== Generated files"
+# Home Control runs from its clone; install wrote only these two there (git ignores them).
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/app"
+rm_path "$APP_DIR/voice-mode.md"
+rm_path "$APP_DIR/manifest.json"
+
 echo "== Relay skills"
 if [[ -n ${VOICE_ROOT:-} ]]; then
   rm_path "$VOICE_ROOT/.claude/skills/relay-mode"
@@ -95,7 +101,6 @@ rm_path "$CONFIG_FILE"
 if (( PURGE )); then
   echo "== Purging data"
   note "about to delete, irreversibly:"
-  note "  ${HOME_CONTROL_APP_DIR:-$DATA_HOME/home-control/app}"
   note "  ${VOICE_STATE:-$DATA_HOME/home-control/state}  (transcript, passphrase, logs)"
   note "  $DATA_HOME/home-control/venv"
   if [[ -n ${WHISPER_MODEL:-} && -e $WHISPER_MODEL ]]; then
@@ -105,13 +110,12 @@ if (( PURGE )); then
     echo "uninstall: --purge needs --force too — confirm the list above with the user first." >&2
     exit 1
   fi
-  rm_path "${HOME_CONTROL_APP_DIR:-$DATA_HOME/home-control/app}"
   rm_path "${VOICE_STATE:-$DATA_HOME/home-control/state}"
   rm_path "$DATA_HOME/home-control/venv"
-  rm_path "$DATA_HOME/home-control"
+  # Only if empty: the clone itself may live in here.
+  rmdir --ignore-fail-on-non-empty "$DATA_HOME/home-control" 2>/dev/null || true
 else
   echo "== Kept (use --purge to remove)"
-  note "app    ${HOME_CONTROL_APP_DIR:-$DATA_HOME/home-control/app}"
   note "state  ${VOICE_STATE:-$DATA_HOME/home-control/state/...}  (transcript, passphrase, logs)"
   note "venv   $DATA_HOME/home-control/venv"
 fi
@@ -122,6 +126,7 @@ Uninstalled.
 
 Not touched, on purpose:
   - VOICE_ROOT (your own folder), apart from the relay skills above
+  - this folder (your clone of Home Control)
   - user linger  (loginctl disable-linger $USER, if nothing else needs it)
   - node, claude, tailscale, mpv
 DONE

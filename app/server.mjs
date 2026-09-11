@@ -27,6 +27,10 @@ const HOST = process.env.VOICE_HOST || '127.0.0.1';
 
 const VOICES = { en: process.env.VOICE_VOICE_EN || 'en-US-AndrewMultilingualNeural', he: process.env.VOICE_VOICE_HE || 'he-IL-AvriNeural' };
 const OWNER = process.env.VOICE_OWNER || 'the user';
+// Names the pages carry, filled in when they are served so the tracked files stay untouched.
+const AGENT_NAME = process.env.VOICE_AGENT_NAME || 'Home Control';
+const PWA_NAME = process.env.VOICE_PWA_NAME || 'Home';
+const TTS_PYTHON = process.env.HOME_CONTROL_TTS_PYTHON || 'python3';
 const MODEL = process.env.VOICE_MODEL || '';
 const EFFORT = process.env.VOICE_EFFORT || '';
 const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';
@@ -81,7 +85,7 @@ const parseCookies = (req) => Object.fromEntries(
 const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
 const readJsonRequest = async (req) => readJsonBody((await readBody(req)).toString('utf8'));
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
-const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file))); };
+const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file), 'utf8').replaceAll('__PWA_NAME__', PWA_NAME).replaceAll('__AGENT__', AGENT_NAME.toUpperCase())); };
 
 // ---------- the gate: one passphrase, a cookie once it is typed ----------
 const WORDS_FILES = ['/usr/share/dict/words', '/usr/share/dict/american-english', '/usr/share/dict/cracklib-small', '/usr/share/words'];
@@ -314,7 +318,7 @@ const detectLang = (t) => (hebrewShare(t) > 0.4 ? 'he' : 'en');
 const TTS_PORT = Number(process.env.TTS_PORT || 4457);
 let ttsWorker = null;
 const startTts = () => {
-  ttsWorker = spawn(path.join(HERE, 'tts.py'), [], { env: { ...process.env, TTS_PORT: String(TTS_PORT) }, stdio: ['ignore', 'ignore', 'pipe'] });
+  ttsWorker = spawn(TTS_PYTHON, [path.join(HERE, 'tts.py')], { env: { ...process.env, TTS_PORT: String(TTS_PORT) }, stdio: ['ignore', 'ignore', 'pipe'] });
   ttsWorker.stderr.on('data', (d) => log(`tts: ${String(d).trim().slice(0, 200)}`));
   ttsWorker.on('exit', (code) => { log(`tts worker exited ${code}`); ttsWorker = null; });
 };

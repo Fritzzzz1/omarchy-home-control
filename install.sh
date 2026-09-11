@@ -30,7 +30,7 @@ MONITOR_PORT=4458
 WHISPER_URL=""
 WHISPER_MODEL=""
 VOICE_ROOT="$HOME"
-APP_DIR="$DATA_HOME/home-control/app"
+APP_DIR="$PLUGIN_DIR/app"   # runs from this clone; nothing is copied
 STATE_DIR=""            # defaults to $DATA_HOME/home-control/state/<label>
 VENV_DIR="$DATA_HOME/home-control/venv"
 TAILNET_HOST=""         # discovered from tailscale
@@ -61,7 +61,6 @@ while (( $# )); do
   --port) VOICE_PORT="$2"; shift 2 ;;
   --tts-port) TTS_PORT="$2"; shift 2 ;;
   --monitor-port) MONITOR_PORT="$2"; shift 2 ;;
-  --app-dir) APP_DIR="$2"; shift 2 ;;
   --state-dir) STATE_DIR="$2"; shift 2 ;;
   --venv) VENV_DIR="$2"; shift 2 ;;
   --node) NODE_BIN="$2"; shift 2 ;;
@@ -173,9 +172,10 @@ so without Tailscale the phone cannot reach it at all, not even on the same LAN"
 fi
 
 # --- 1. the app ---------------------------------------------------------------
-step "1. Installing the app to $APP_DIR"
-mkdir -p "$APP_DIR"
-cp -a "$PLUGIN_DIR/app/." "$APP_DIR/"
+# Home Control runs from this clone - nothing is copied. Install writes only files git ignores
+# (voice-mode.md, manifest.json); everything machine-specific goes into config.env. Update with
+# `git pull` and a restart.
+step "1. Running from this clone: $APP_DIR"
 
 # --- 2. the venv --------------------------------------------------------------
 step "2. Python venv for edge-tts"
@@ -188,12 +188,10 @@ else
   note "skipped (--no-venv); expecting an edge-tts python at $TTS_PYTHON"
 fi
 
-# tts.py is executed directly, so its shebang decides which python runs it.
-# The shipped copy points at wherever it was packaged; repoint it here.
-[[ -f $APP_DIR/tts.py ]] || die "tts.py missing from the payload at $APP_DIR"
-sed -i "1s|.*|#!$TTS_PYTHON|" "$APP_DIR/tts.py"
-chmod +x "$APP_DIR/tts.py"
-note "tts.py shebang -> $TTS_PYTHON"
+# server.mjs starts tts.py with this python (HOME_CONTROL_TTS_PYTHON in config.env), so the
+# tracked file is never edited.
+[[ -f $APP_DIR/tts.py ]] || die "tts.py missing from $APP_DIR"
+note "tts.py runs with $TTS_PYTHON"
 
 # The agent's voice persona names the person it is talking to and the machine it
 # runs on, so it is rendered here rather than shipped with someone else's name in it.
@@ -208,9 +206,8 @@ sed -e "/__DELEGATION_BLOCK__/r $_block" -e "/__DELEGATION_BLOCK__/d" \
   >"$APP_DIR/voice-mode.md"
 note "$APP_DIR/voice-mode.md — edit it to change how the agent speaks"
 note "delegation guidance: $(basename "$_block")"
-# The phone page's reply label reads the same __AGENT__ placeholder, upper-cased
-# to match the label style already used for "YOU".
-sed -i "s|__AGENT__|${AGENT_NAME^^}|g" "$APP_DIR/index.html"
+# The phone page's reply label (__AGENT__) is filled in by server.mjs when it serves the page,
+# from VOICE_AGENT_NAME in config.env.
 
 # The PWA manifest names the home-screen icon; it is rendered per install for
 # the same reason voice-mode.md is - "Home" baked in is wrong the moment a
@@ -220,9 +217,8 @@ sed -e "s|__PWA_NAME__|$PWA_NAME|g" -e "s|__LABEL__|$LABEL|g" \
   "$PLUGIN_DIR/app/manifest.json.in" \
   >"$APP_DIR/manifest.json"
 # iOS Safari uses apple-mobile-web-app-title for the home-screen label ahead of
-# the manifest's name, so it has to carry the same name or the icon still says
-# "Home" no matter what the manifest says.
-sed -i "s|__PWA_NAME__|$PWA_NAME|g" "$APP_DIR/index.html" "$APP_DIR/login.html"
+# the manifest's name, so the pages carry the same name - server.mjs fills in
+# __PWA_NAME__ from VOICE_PWA_NAME in config.env when it serves them.
 
 # The relay skills go where the agent runs, so both the voice agent and any session started in
 # VOICE_ROOT find them. Relaying is SendMessage, so they ship only with delegation on.
@@ -273,6 +269,11 @@ VOICE_LOCAL_PLAYER=$LOCAL_PLAYER
 # Who the agent thinks it is talking to. Used when a long reply is rewritten for
 # the ear, so the pronouns stay right.
 VOICE_OWNER=$OWNER
+
+# The agent's name on the phone page, and the home-screen icon's name. Filled into
+# the pages when they are served.
+VOICE_AGENT_NAME=$AGENT_NAME
+VOICE_PWA_NAME=$PWA_NAME
 
 # The edge-tts CLI, used only as a fallback when the warm TTS worker is down.
 VOICE_EDGE_TTS=$VENV_DIR/bin/edge-tts
