@@ -243,6 +243,7 @@ const earOn = () => {
 // asks for one — the same repair then runs inside the tap. One attempt per foreground, no loop.
 // A return during a reply, or while muted, defers the repair to the next earOn.
 let audioCtx = null, micDead = false, micStale = false, frames = 0;   // frames: VAD frames seen, proof the graph is alive
+const micState = () => { const t = vad?._stream?.getAudioTracks?.()[0]; return `ctx=${audioCtx?.state}@${audioCtx?.sampleRate} track=${t ? t.readyState + (t.muted ? '/muted' : '') : 'none'} frames=${frames}`; };
 const clientLog = (msg) => fetch('/api/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg }) }).catch(() => {});
 const framesArrive = async (ms = 1500) => { const before = frames; await new Promise((r) => setTimeout(r, ms)); return frames > before; };
 async function repairMic() {
@@ -260,7 +261,7 @@ async function checkMic() {
   micStale = false;
   setMode('thinking', 'Opening the microphone');
   try { await repairMic(); micDead = false; earOn(); }
-  catch (e) { micDead = true; earOff(); setMode('error', 'Tap the orb to reopen the mic'); clientLog('mic repair failed: ' + (e.message || e) + ' ctx=' + audioCtx?.state); }
+  catch (e) { micDead = true; earOff(); setMode('error', 'Tap the orb to reopen the mic'); clientLog('mic repair failed: ' + (e.message || e) + ' ' + micState()); }
 }
 // ---- manual mode: mic stays open and VAD keeps running (for the level meter), but nothing is
 // sent until the orb is tapped twice — no silence timeout ends it early. Frames are buffered from
@@ -373,7 +374,12 @@ async function start() {
   unlock(); keepAwake();
   if (!audioCtx) audioCtx = new AudioContext();   // made inside the tap so iPhone never sees it suspended
   big.disabled = true;
-  try { setMode('thinking', 'Opening the microphone'); await startEar(); }
+  // Same gate as the foreground repair: Listening only once VAD frames arrive. A fresh mic that
+  // opens silent (iPhone top-bar dot on, nothing reaching the page) gets one rebuild, then errors.
+  try {
+    setMode('thinking', 'Opening the microphone'); await startEar();
+    if (!(await framesArrive())) { clientLog('start silent: ' + micState()); await repairMic(); }
+  }
   catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); hint.textContent = 'Allow the microphone for this page, then tap Start again.'; big.disabled = false; return; }
   on = true; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
   setMode('listening', listeningLabel()); touch();
