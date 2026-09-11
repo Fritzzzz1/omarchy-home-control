@@ -7,34 +7,50 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn, execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readBody } from './request-body.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
 const LABEL = process.env.VOICE_LABEL || 'voice';
-const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'state', LABEL);
+const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'home-control', 'state', LABEL);
 const AUDIO_DIR = path.join(STATE, 'audio');
 const TOKEN_FILE = process.env.VOICE_TOKEN || path.join(STATE, 'voice-token');
 const SESSIONS_FILE = path.join(STATE, 'logins.json');
 const CLAUDE_SESSION_FILE = path.join(STATE, 'claude-session.json');
 const TRANSCRIPT = path.join(STATE, 'transcript.jsonl');
 const LOG = path.join(STATE, 'voice.log');
-const EDGE_TTS = process.env.VOICE_EDGE_TTS || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'venv', 'bin', 'edge-tts');
+const EDGE_TTS = process.env.VOICE_EDGE_TTS || path.join(os.homedir(), '.local', 'share', 'home-control', 'venv', 'bin', 'edge-tts');
 const PORT = Number(process.env.VOICE_PORT || 4455);
 const HOST = process.env.VOICE_HOST || '127.0.0.1';
 
 const VOICES = { en: process.env.VOICE_VOICE_EN || 'en-US-AndrewMultilingualNeural', he: process.env.VOICE_VOICE_HE || 'he-IL-AvriNeural' };
 const OWNER = process.env.VOICE_OWNER || 'the user';
+// Names the pages carry, filled in when they are served so the tracked files stay untouched.
+const AGENT_NAME = process.env.VOICE_AGENT_NAME || 'Home Control';
+const PWA_NAME = process.env.VOICE_PWA_NAME || 'Home';
+const TTS_PYTHON = process.env.HOME_CONTROL_TTS_PYTHON || 'python3';
 const MODEL = process.env.VOICE_MODEL || '';
 const EFFORT = process.env.VOICE_EFFORT || '';
 const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';
-// His word (2026-09-03): the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
+// Off means: a page-shaped reply is still de-markdowned (stripMarkdown), just not sent to
+// Haiku to be reworded for the ear first. That second call is real extra cost, not free
+// polish - asked about at install time, see VOICE_SPEECH_REWRITE in config.env.
+const SPEECH_REWRITE_ON = process.env.VOICE_SPEECH_REWRITE !== 'off';
+// By design: the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebFetch', 'WebSearch',
   'Bash(git status:*)', 'Bash(git log:*)', 'Bash(git diff:*)', 'Bash(date:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(find:*)', 'Bash(grep:*)',
   'Bash(sqlite3:*)', 'Bash(python3:*)', 'Bash(node:*)', 'Bash(ffmpeg:*)', 'Bash(ffprobe:*)', 'Bash(curl:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)',
 ];
+// Handing work to another live Claude Code session on this machine. Opt-in, and
+// off unless install.sh was explicitly told otherwise, because it widens who can
+// act on a spoken request. The rule that goes with it is in voice-mode.md:
+// lacking a tool is a reason to delegate; having been refused is not.
+if ((process.env.VOICE_PEER_DELEGATION || '').toLowerCase() === 'on') {
+  ALLOWED_TOOLS.push('ListAgents', 'SendMessage');
+}
 const PERMISSION_SETTINGS = JSON.stringify({
   permissions: {
     deny: [
@@ -62,15 +78,14 @@ const readJson = (file, fallback) => {
 };
 const writeJson = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2));
 const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-const readBody = (req, limit = 1e6) => new Promise((resolve) => {
-  const chunks = [];
-  let size = 0;
-  req.on('data', (c) => { chunks.push(c); size += c.length; if (size > limit) req.destroy(); });
-  req.on('end', () => resolve(Buffer.concat(chunks)));
-});
+// request-body.mjs owns bounded request reads.
 const parseCookies = (req) => Object.fromEntries(
   (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]),
 );
+const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
+const readJsonRequest = async (req) => readJsonBody((await readBody(req)).toString('utf8'));
+const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file), 'utf8').replaceAll('__PWA_NAME__', PWA_NAME).replaceAll('__AGENT__', AGENT_NAME.toUpperCase())); };
 
 // ---------- the gate: one passphrase, a cookie once it is typed ----------
 const WORDS_FILES = ['/usr/share/dict/words', '/usr/share/dict/american-english', '/usr/share/dict/cracklib-small', '/usr/share/words'];
@@ -121,6 +136,29 @@ const tryLogin = (key, res, req) => {
   return true;
 };
 
+// ---------- the event log: every output event, from a live turn or a delayed relay reply,
+// in one ordered, bounded list. This is the reliability backbone behind /api/events — a phone
+// that was backgrounded (or asleep) polls it and catches up on anything the per-turn SSE
+// stream never reached it, including a relay reply that lands after its own turn already
+// closed. Kept small so a long-running process never grows it without bound: capped by count
+// and by age, whichever trims first.
+const EVENT_LOG_MAX = 500;
+const EVENT_LOG_MS = 30 * 60 * 1000;
+// Generated once per process start. A client persists {cursor, bootId}; if this doesn't match
+// what it has stored, the server restarted (and its in-memory eventLog is gone/rebuilt) — the
+// client must reset its cursor to 0 rather than polling forever with a cursor that can never
+// match again (a stale cursor higher than anything in a fresh log returns nothing, silently,
+// forever).
+const BOOT_ID = crypto.randomBytes(8).toString('hex');
+let eventLog = [];
+let eventSeq = 0;
+const logEvent = (turnId, source, ev) => {
+  eventSeq += 1;
+  eventLog.push({ id: eventSeq, at: new Date().toISOString(), turnId, source, ...ev });
+  const cutoff = Date.now() - EVENT_LOG_MS;
+  while (eventLog.length > EVENT_LOG_MAX || (eventLog.length && Date.parse(eventLog[0].at) < cutoff)) eventLog.shift();
+};
+
 // ---------- claude ----------
 const claudeSession = () => readJson(CLAUDE_SESSION_FILE, { id: null, turns: 0 });
 const saveClaudeSession = (s) => writeJson(CLAUDE_SESSION_FILE, s);
@@ -160,7 +198,23 @@ const spawnClaude = () => {
       if (!line.trim()) continue;
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
-      turnHandler?.(ev);
+      if (turnHandler) { turnHandler(ev); continue; }
+      // No turn is waiting (another session woke the agent): speak its reply anyway instead of
+      // dropping it (never silently lost — the room hears it even if nobody's phone is around),
+      // and log the same rendered events with source: 'relay' so a polling phone picks them up.
+      if (ev.type === 'result' && !ev.is_error && ev.result) {
+        const relayTurnId = `relay-${crypto.randomBytes(6).toString('hex')}`;
+        (async () => {
+          const spoken = stripMarkdown(ev.result);
+          const groups = sentenceGroups(spoken);
+          const renders = groups.map((g) => speak(g).catch(() => null));
+          for (let i = 0; i < renders.length; i++) {
+            const a = await renders[i];
+            if (a) { playLocally(a.file, i, groups[i]); logEvent(relayTurnId, 'relay', { type: 'audio', url: a.url, index: i, text: groups[i] }); }
+          }
+          logEvent(relayTurnId, 'relay', { type: 'text', text: spoken, full: ev.result });
+        })();
+      }
     }
   });
   child.on('exit', (code) => {
@@ -168,7 +222,7 @@ const spawnClaude = () => {
     if (claudeProc === child) claudeProc = null;
     turnHandler?.({ type: 'process_exit', code, stderr });
   });
-  log(`claude process started (${session.id ? 'resuming ' + session.id : 'new session'})`);
+  log(`agent process started (${session.id ? 'resuming ' + session.id : 'new session'})`);
   return child;
 };
 const stopClaude = () => { const p = claudeProc; claudeProc = null; if (p) { try { p.stdin.end(); } catch {} setTimeout(() => { try { p.kill(); } catch {} }, 2000); } };
@@ -242,7 +296,7 @@ const stripMarkdown = (t) => t
 // ---------- transcription: whisper.cpp's own server, spawned here, model loaded once ----------
 const WHISPER_PORT = Number(process.env.WHISPER_PORT || 4456);
 const WHISPER_URL = (process.env.WHISPER_URL || '').replace(/\/$/, '');
-const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'jarvis-voice', 'models', 'ggml-large-v3-turbo.bin');
+const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'home-control', 'models', 'ggml-large-v3-turbo.bin');
 let whisper = null;
 const WHISPER_BASE = () => WHISPER_URL || `http://${HOST}:${WHISPER_PORT}`;
 const startWhisper = () => {
@@ -291,10 +345,11 @@ const hebrewShare = (t) => {
   if (!letters) return 0;
   return (letters.match(/[\u0590-\u05FF]/g) || []).length / letters.length;
 };
+const detectLang = (t) => (hebrewShare(t) > 0.4 ? 'he' : 'en');
 const TTS_PORT = Number(process.env.TTS_PORT || 4457);
 let ttsWorker = null;
 const startTts = () => {
-  ttsWorker = spawn(path.join(HERE, 'tts.py'), [], { env: { ...process.env, TTS_PORT: String(TTS_PORT) }, stdio: ['ignore', 'ignore', 'pipe'] });
+  ttsWorker = spawn(TTS_PYTHON, [path.join(HERE, 'tts.py')], { env: { ...process.env, TTS_PORT: String(TTS_PORT) }, stdio: ['ignore', 'ignore', 'pipe'] });
   ttsWorker.stderr.on('data', (d) => log(`tts: ${String(d).trim().slice(0, 200)}`));
   ttsWorker.on('exit', (code) => { log(`tts worker exited ${code}`); ttsWorker = null; });
 };
@@ -315,7 +370,7 @@ setInterval(() => {
 const LOCAL_PLAYER = process.env.VOICE_LOCAL_PLAYER || 'mpv';
 // Speaking speed. The phone can only speed up its own <audio>; this is the same setting applied
 // to the machine's own output — the one the TV plays — so a tap on the phone changes what the
-// room hears too. On disk, so a restart doesn't quietly drop back to 1x. (Liran, 09-09)
+// room hears too. On disk, so a restart doesn't quietly drop back to 1x.
 const RATE_FILE = path.join(STATE, 'speech-rate.json');
 const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 1.75];
 let speechRate = (() => { const r = Number(readJson(RATE_FILE, {}).rate); return SPEECH_RATES.includes(r) ? r : 1; })();
@@ -368,7 +423,7 @@ const speakViaCli = (text, voice, out) => new Promise((resolve, reject) => {
   child.on('close', (code) => { fs.rmSync(txt, { force: true }); code === 0 && fs.existsSync(out) ? resolve() : reject(new Error(`tts failed: ${err.trim().split('\n').pop() || code}`)); });
   child.on('error', reject);
 });
-const speak = async (text, lang = hebrewShare(text) > 0.4 ? 'he' : 'en') => {
+const speak = async (text, lang = detectLang(text)) => {
   const id = crypto.randomBytes(8).toString('hex');
   const out = path.join(AUDIO_DIR, `${id}.mp3`);
   const voice = VOICES[lang];
@@ -383,6 +438,8 @@ const speak = async (text, lang = hebrewShare(text) > 0.4 ? 'he' : 'en') => {
   if (!done) await speakViaCli(text, voice, out);
   return { url: `/audio/${id}.mp3`, file: out, lang };
 };
+// One sentence's audio: tell the phone, and start it playing locally too.
+const emitAudio = (send, audio, index, text) => { send({ type: 'audio', url: audio.url, index, text }); playLocally(audio.file, index, text); };
 // Sentences are spoken as the model writes them: each complete sentence goes to TTS at once,
 // renders in parallel with the next, and is sent to the phone in order.
 const SENTENCE_END = /[.!?׃]["'”)]?(?=\s)|\n/g;
@@ -398,7 +455,7 @@ const makeSpeaker = (send, lang) => {
     spoken.push(text);
     const t0 = Date.now();
     const render = speak(text, hebrewShare(text) > 0.4 ? 'he' : lang).then((a) => { log(`tts ${index}: ${Date.now() - t0}ms for ${text.length} chars`); return a; }).catch((e) => { log(`tts failed on a sentence: ${e.message}`); return null; });
-    chain = chain.then(async () => { const a = await render; if (a) { send({ type: 'audio', url: a.url, index, text }); playLocally(a.file, index, text); } });
+    chain = chain.then(async () => { const a = await render; if (a) emitAudio(send, a, index, text); });
   };
   return {
     // everything up to the last sentence end is spoken now; the tail waits for more words
@@ -433,12 +490,37 @@ const sse = (res) => {
   return (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
 };
 
+// Fallback for when the model streamed no speakable sentences: rewrite the result text for
+// the ear if it looks like a page, then speak it in parallel-rendered, in-order chunks —
+// same playback shape as makeSpeaker, just not streamed sentence-by-sentence.
+const speakFallback = async (turnText, lang, send, onAudio) => {
+  let spoken = stripMarkdown(turnText);
+  if (SPEECH_REWRITE_ON && looksLikePage(turnText)) {
+    send({ type: 'status', text: 'fitting for voice' });
+    spoken = stripMarkdown(await rewriteForSpeech(turnText, lang));
+  }
+  if (!spoken) spoken = lang === 'he' ? 'סיימתי, אבל לא יצא לי טקסט להקריא.' : 'Done, but I have no text to read back.';
+  const groups = sentenceGroups(spoken);
+  const renders = groups.map((g) => speak(g, detectLang(spoken)));
+  for (let i = 0; i < renders.length; i++) {
+    const audio = await renders[i];
+    onAudio();
+    emitAudio(send, audio, i, groups[i]);
+  }
+  return spoken;
+};
+
 const handleTurn = async (req, res) => {
   if (busy) { log('turn refused: busy'); return json(res, 409, { error: 'busy' }); }
   busy = true;
   resetSpokenState();
   lastTurnAt = Date.now();
-  const send = sse(res);
+  const turnId = crypto.randomBytes(6).toString('hex');
+  const sendRaw = sse(res);
+  // Every event the phone gets live over this turn's SSE stream is also appended to the
+  // shared event log (source: 'phone') so a phone that reconnects later — or another device
+  // polling /api/events — can catch up on the same turn.
+  const send = (ev) => { sendRaw(ev); logEvent(turnId, 'phone', ev); };
   const started = Date.now();
   try {
     let text, lang;
@@ -447,30 +529,24 @@ const handleTurn = async (req, res) => {
       send({ type: 'status', text: 'transcribing' });
       text = await transcribe(wav, (stage) => send({ type: 'status', text: stage, startup: true }));
       if (!text) { log(`ignored: nothing usable in ${wav.length} bytes of audio`); send({ type: 'ignored' }); return; }
-      lang = hebrewShare(text) > 0.4 ? 'he' : 'en';
+      lang = detectLang(text);
       send({ type: 'transcript', text });
       log(`heard (${Date.now() - started}ms): ${text.slice(0, 80)}`);
     } else {
-      const body = readJsonBody((await readBody(req)).toString('utf8'));
+      const body = await readJsonRequest(req);
       text = String(body.text || '').trim();
       if (!text) { send({ type: 'error', text: 'empty' }); return; }
-      lang = body.lang === 'he' ? 'he' : hebrewShare(text) > 0.4 ? 'he' : 'en';
+      lang = body.lang === 'he' ? 'he' : detectLang(text);
     }
     const first = !claudeSession().id;
     send({ type: 'status', text: first ? 'waking up' : 'thinking' });
     warmTts(lang);
     let firstAudioAt = 0;
-    const speaker = makeSpeaker((ev) => { if (!firstAudioAt) firstAudioAt = Date.now(); send(ev); }, lang);
+    const markFirstAudio = () => { if (!firstAudioAt) firstAudioAt = Date.now(); };
+    const speaker = makeSpeaker((ev) => { markFirstAudio(); send(ev); }, lang);
     const turn = await runTurn(text, (ev) => (ev.type === 'delta' ? speaker.feed(ev.text) : send(ev)));
     let spoken = await speaker.finish();
-    if (!spoken) {
-      spoken = stripMarkdown(turn.text);
-      if (looksLikePage(turn.text)) { send({ type: 'status', text: 'fitting for voice' }); spoken = stripMarkdown(await rewriteForSpeech(turn.text, lang)); }
-      if (!spoken) spoken = lang === 'he' ? 'סיימתי, אבל לא יצא לי טקסט להקריא.' : 'Done, but I have no text to read back.';
-      const groups = sentenceGroups(spoken);
-      const renders = groups.map((g) => speak(g, hebrewShare(spoken) > 0.4 ? 'he' : 'en'));
-      for (let i = 0; i < renders.length; i++) { const audio = await renders[i]; if (!firstAudioAt) firstAudioAt = Date.now(); send({ type: 'audio', url: audio.url, index: i, text: groups[i] }); playLocally(audio.file, i, groups[i]); }
-    }
+    if (!spoken) spoken = await speakFallback(turn.text, lang, send, markFirstAudio);
     send({ type: 'text', text: spoken, full: turn.text });
     fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: turn.text, spoken, ms: Date.now() - started, cost: turn.cost }) + '\n');
     log(`turn ok ${Date.now() - started}ms first-audio=${firstAudioAt ? firstAudioAt - started : '-'}ms sentences=${speaker.count} cost=$${(turn.cost || 0).toFixed(3)} session=${turn.sessionId}`);
@@ -491,46 +567,16 @@ const handleTurn = async (req, res) => {
   }
 };
 
-// ---------- phone-as-mic: raw continuous audio -> a virtual mic device meeting apps can pick.
-// Nothing to do with the agent turn above: no whisper, no claude, no tts. Just a pipe.
-const MIC_SINK = process.env.MIC_SINK || 'phone_mic';
-let micProc = null;
-const ensureMicSink = () => {
-  try {
-    const list = execSync('pactl list short sinks').toString();
-    if (!list.split('\n').some((l) => l.split('\t')[1] === MIC_SINK)) {
-      execSync(`pactl load-module module-null-sink sink_name=${MIC_SINK} sink_properties=device.description=Phone_Mic`);
-      log(`mic: created virtual sink ${MIC_SINK}`);
-    }
-  } catch (e) { log(`mic: sink setup failed: ${e.message}`); }
+// Icons and the manifest are public: iOS asks for them when the app is added to the
+// home screen, and the login page needs them too. Fixed allowlist — no path building.
+const PUBLIC_FILES = {
+  '/manifest.json': 'application/manifest+json',
+  '/apple-touch-icon.png': 'image/png',
+  '/icon-192.png': 'image/png',
+  '/icon-512.png': 'image/png',
+  '/favicon-32.png': 'image/png',
+  '/favicon.ico': 'image/png',
 };
-const startMic = (rate) => {
-  ensureMicSink();
-  if (micProc) { try { micProc.kill(); } catch {} }
-  const hz = Number(rate) || 48000;
-  const proc = spawn('paplay', ['--raw', '--format=s16le', `--rate=${hz}`, '--channels=1', `--device=${MIC_SINK}`], { stdio: ['pipe', 'ignore', 'pipe'] });
-  micProc = proc;
-  proc.stderr.on('data', (d) => log(`mic: paplay: ${d.toString().trim()}`));
-  // guard: an old process exiting late (killed by a newer start) must not null out a process that replaced it
-  proc.on('exit', (code) => { log(`mic: paplay exited (${code})`); if (micProc === proc) micProc = null; });
-  log(`mic: started -> device=${MIC_SINK} rate=${hz}`);
-};
-const stopMic = () => {
-  if (!micProc) return;
-  try { micProc.stdin.end(); } catch {}
-  try { micProc.kill(); } catch {}
-  micProc = null;
-  log('mic: stopped');
-};
-const micChunk = async (req, res) => {
-  const body = await readBody(req, 2_000_000);
-  if (micProc?.stdin.writable) { try { micProc.stdin.write(body); } catch (e) { log(`mic: write failed: ${e.message}`); } }
-  json(res, 200, { ok: true });
-};
-
-const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
-const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
-const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file))); };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
@@ -545,16 +591,6 @@ const server = http.createServer(async (req, res) => {
     if (url.searchParams.get('key') && !isLoggedIn(req)) {
       if (tryLogin(url.searchParams.get('key'), res, req)) { res.writeHead(303, { Location: '/' }); return res.end(); }
     }
-    // Icons and the manifest are public: iOS asks for them when the app is added to the
-    // home screen, and the login page needs them too. Fixed allowlist — no path building.
-    const PUBLIC_FILES = {
-      '/manifest.json': 'application/manifest+json',
-      '/apple-touch-icon.png': 'image/png',
-      '/icon-192.png': 'image/png',
-      '/icon-512.png': 'image/png',
-      '/favicon-32.png': 'image/png',
-      '/favicon.ico': 'image/png',
-    };
     if (PUBLIC_FILES[url.pathname]) {
       const file = path.join(HERE, url.pathname === '/favicon.ico' ? 'favicon-32.png' : url.pathname.slice(1));
       if (!fs.existsSync(file)) { res.writeHead(404); return res.end(); }
@@ -566,18 +602,10 @@ const server = http.createServer(async (req, res) => {
       return html(res, 'login.html', 401);
     }
     if (url.pathname === '/') return html(res, 'index.html');
-    if (url.pathname === '/mic') return html(res, 'mic.html');
-    if (url.pathname === '/api/mic-start' && req.method === 'POST') {
-      const body = readJsonBody((await readBody(req)).toString('utf8'));
-      startMic(body.rate);
-      return json(res, 200, { ok: true, sink: MIC_SINK });
-    }
-    if (url.pathname === '/api/mic-chunk' && req.method === 'POST') return micChunk(req, res);
-    if (url.pathname === '/api/mic-stop' && req.method === 'POST') { stopMic(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
-      const body = readJsonBody((await readBody(req)).toString('utf8'));
+      const body = await readJsonRequest(req);
       const ok = setSpeechRate(body.rate);
       return json(res, ok ? 200 : 400, { ok, rate: speechRate });
     }
@@ -585,9 +613,11 @@ const server = http.createServer(async (req, res) => {
       const old = claudeSession();
       stopClaude();
       saveClaudeSession({ id: null, turns: 0, previous: old.id });
-      // New conversation means new conversation: the drawer's file is cleared.
-      // Nothing is lost — per-turn ms/cost/session are already in voice.log.
+      // New conversation means new conversation: the drawer's file is cleared, and so is the
+      // event log — otherwise old content stays reachable via /api/events (a catching-up phone
+      // would render it into the fresh conversation) even after the reset button was pressed.
       try { fs.rmSync(TRANSCRIPT, { force: true }); } catch {}
+      eventLog = [];
       log(`session reset (was ${old.id}, ${old.turns} turns)`);
       return json(res, 200, { ok: true });
     }
@@ -595,6 +625,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
       return json(res, 200, lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));
+    }
+    // The reliability backbone: a phone polls this while foregrounded and catches up on
+    // anything it missed — most importantly a relay reply that landed after its own turn's
+    // SSE connection had already closed. `after` is the highest event id already seen; with
+    // none given (first load), the recent tail of the log is returned instead of nothing.
+    if (url.pathname === '/api/events' && req.method === 'GET') {
+      const after = Number(url.searchParams.get('after'));
+      const list = Number.isFinite(after) && after > 0 ? eventLog.filter((e) => e.id > after) : eventLog.slice(-50);
+      return json(res, 200, { events: list, cursor: eventLog.length ? eventLog[eventLog.length - 1].id : after || 0, bootId: BOOT_ID });
     }
     if (url.pathname.startsWith('/audio/')) {
       const file = path.join(AUDIO_DIR, path.basename(url.pathname));

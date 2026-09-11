@@ -9,9 +9,9 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <meta name="theme-color" content="#101313">
-<meta name="apple-mobile-web-app-title" content="Home">
+<meta name="apple-mobile-web-app-title" content="__PWA_NAME__">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Home · voice</title>
+<title>__PWA_NAME__ · voice</title>
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/bundle.min.js"></script>
@@ -28,7 +28,7 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 /* Compact voice header, readable exchange, and a stable control dock. */
-body{height:100dvh}#top{padding:12px 24px 16px;gap:10px}.orb-stage{height:160px;width:180px;margin:0}.orb-stage:before{width:148px;height:148px}.orb-stage:after{width:174px;height:174px}#orb{width:116px;height:116px}#modeText{font-size:22px;line-height:1.4;min-height:31px;letter-spacing:-.4px}#exchange{padding:12px 24px 20px;gap:18px;scroll-padding:16px}#heard{display:block;margin:0;padding:15px 18px;flex:none;line-height:1.65;font-size:15px;overflow:visible;-webkit-line-clamp:unset;background:#b8d6bd06;border-color:#b8d6bd16;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere}#heard:before{content:'YOU';display:block;color:#92aa9c;font-size:10px;letter-spacing:1.6px;margin-bottom:6px}#heard.hidden{display:none}#reply{flex:none;background:#d28e6807;border:1px solid #d28e6820;border-radius:14px;padding:18px;font-size:17px;line-height:1.75;white-space:normal;letter-spacing:.05px}#reply:before{content:'✺  CLAUDE';display:block;font-size:10px;letter-spacing:1.6px;color:#d3a084;margin-bottom:12px}#reply span{display:block;margin:0 0 12px;white-space:pre-wrap;color:#d5dcd6;transition:color .2s}#reply span:last-child{margin-bottom:0}#reply span.now{color:#f4e7dd}#reply span.done{color:#d5dcd6;opacity:1}#reply.speaking{border-color:#d28e683d}#hint{font-size:14px;line-height:1.7;margin:auto;max-width:260px;padding:24px 0}#controls{align-items:stretch;padding:14px 24px calc(env(safe-area-inset-bottom) + 16px);gap:10px;border-top:1px solid var(--line);background:#101313}#big{width:100%;min-height:52px;padding:13px 20px;border-radius:14px;font-size:15px;box-shadow:none}#row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}#row button,#row #skip{width:100%;height:60px;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px;border-radius:12px;border:1px solid #ffffff12;background:#ffffff03;padding:8px 4px;color:#b5c1b8;font-size:10px;font-weight:400;line-height:1.1}#row button svg{width:19px;height:19px;flex:none}#row button.hidden,#row button:disabled{opacity:.35;cursor:default}#row #mute.on,#row #earMute.on{color:#e5c28e;background:#e5c28e10;border-color:#e5c28e30}#history header h1 small{display:none}.msg{font-size:16px;line-height:1.75}.msg.agent{padding:16px 18px;background:#d28e6807;border:1px solid #d28e6820;border-radius:14px}.msg.agent:before{content:'✺ CLAUDE';color:#d3a084}#log{gap:18px;padding:20px}.typebar{margin-top:8px}#text{font-size:16px}
+body{height:100dvh}#top{padding:12px 24px 16px;gap:10px}.orb-stage{height:160px;width:180px;margin:0}.orb-stage:before{width:148px;height:148px}.orb-stage:after{width:174px;height:174px}#orb{width:116px;height:116px}#modeText{font-size:22px;line-height:1.4;min-height:31px;letter-spacing:-.4px}#exchange{padding:12px 24px 20px;gap:18px;scroll-padding:16px}#heard{display:block;margin:0;padding:15px 18px;flex:none;line-height:1.65;font-size:15px;overflow:visible;-webkit-line-clamp:unset;background:#b8d6bd06;border-color:#b8d6bd16;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere}#heard:before{content:'YOU';display:block;color:#92aa9c;font-size:10px;letter-spacing:1.6px;margin-bottom:6px}#heard.hidden{display:none}#reply{flex:none;background:#d28e6807;border:1px solid #d28e6820;border-radius:14px;padding:18px;font-size:17px;line-height:1.75;white-space:normal;letter-spacing:.05px}#reply:before{content:'✺  __AGENT__';display:block;font-size:10px;letter-spacing:1.6px;color:#d3a084;margin-bottom:12px}#reply span{display:block;margin:0 0 12px;white-space:pre-wrap;color:#d5dcd6;transition:color .2s}#reply span:last-child{margin-bottom:0}#reply span.now{color:#f4e7dd}#reply span.done{color:#d5dcd6;opacity:1}#reply.speaking{border-color:#d28e683d}#hint{font-size:14px;line-height:1.7;margin:auto;max-width:260px;padding:24px 0}#controls{align-items:stretch;padding:14px 24px calc(env(safe-area-inset-bottom) + 16px);gap:10px;border-top:1px solid var(--line);background:#101313}#big{width:100%;min-height:52px;padding:13px 20px;border-radius:14px;font-size:15px;box-shadow:none}#row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}#row button,#row #skip{width:100%;height:60px;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:5px;border-radius:12px;border:1px solid #ffffff12;background:#ffffff03;padding:8px 4px;color:#b5c1b8;font-size:10px;font-weight:400;line-height:1.1}#row button svg{width:19px;height:19px;flex:none}#row button.hidden,#row button:disabled{opacity:.35;cursor:default}#row #mute.on,#row #earMute.on{color:#e5c28e;background:#e5c28e10;border-color:#e5c28e30}#history header h1 small{display:none}.msg{font-size:16px;line-height:1.75}.msg.agent{padding:16px 18px;background:#d28e6807;border:1px solid #d28e6820;border-radius:14px}.msg.agent:before{content:'✺ __AGENT__';color:#d3a084}#log{gap:18px;padding:20px}.typebar{margin-top:8px}#text{font-size:16px}
 @media(min-width:900px){#top{padding-top:22px}#exchange{width:min(100%,700px)}#exchange #heard{width:100%;align-self:auto}#controls{width:min(100%,700px);align-self:center}#row{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:899px){body>header{padding:calc(env(safe-area-inset-top) + 14px) 20px 8px}.brand-sub{display:none}body>header button{font-size:11px;padding:8px 12px}#top{flex-direction:row;justify-content:flex-start;text-align:left;gap:24px;padding:10px 28px 14px;min-height:112px}.orb-stage{width:96px;height:96px;flex:none}.orb-stage:before{width:92px;height:92px}.orb-stage:after{width:112px;height:112px}#orb{width:76px;height:76px}#modeText{font-size:20px;min-height:0;max-height:84px;overflow:auto;overflow-wrap:anywhere}#exchange{padding:10px 20px 18px;gap:14px}#heard{font-size:14px;padding:14px 16px}#reply{font-size:17px;padding:16px}#controls{padding:12px 20px calc(env(safe-area-inset-bottom) + 12px)}}
 @media(max-height:650px) and (max-width:899px){#top{min-height:84px;padding-top:5px;padding-bottom:9px;gap:20px}.orb-stage{width:70px;height:70px}.orb-stage:before{width:68px;height:68px}.orb-stage:after{width:82px;height:82px}#orb{width:56px;height:56px}#row button,#row #skip{height:52px}#controls{padding-top:8px;gap:8px}#big{min-height:46px;padding:10px}}
@@ -146,6 +146,7 @@ let on = false, busy = false, muted = false, earMuted = false, vad = null, unloc
 let queue = [], playing = false, currentTurn = 0, paused = false, nowSpan = null, idleTimer = null;
 let voiceMode = 'auto';   // 'auto' (default) or 'manual'
 try { if (localStorage.getItem('voiceMode') === 'manual') voiceMode = 'manual'; } catch {}
+const listeningLabel = () => (voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');   // shown on the orb whenever the mic goes live
 let dictating = false, dictateFrames = [];   // manual mode: raw 16kHz frames buffered between orb taps
 let speechOpen = false;   // auto mode: an utterance the VAD started while the mic was live
 let textFlow = 'instant';   // 'instant' (default) or 'flowing'
@@ -166,6 +167,11 @@ const setMode = (cls, text) => {
 };
 const setPaused = (p) => { paused = p; $('pause').setAttribute('aria-label', p ? 'Resume reply' : 'Pause reply'); $('pauseIcon').style.display = p ? 'none' : ''; $('playIcon').style.display = p ? '' : 'none'; };
 const add = (cls, body) => { const d = document.createElement('div'); d.className = 'msg ' + cls; d.dir = 'auto'; d.textContent = body; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; return d; };
+// The one render path for "here is the agent's finished reply as text", used identically
+// whether the text arrived live (the turn's own 'text' event) or was caught up after the fact
+// (a relay reply, or this phone's own turn found via /api/events). Always the raw/full text —
+// not the cleaned-for-the-ear version — in both the main view and the drawer.
+const renderTurnText = (full) => { if (!reply.childElementCount) addPiece(full); add('agent', full); };
 const showHeard = (text) => { hint.style.display = 'none'; heard.textContent = text; heard.classList.remove('hidden', 'open'); reply.textContent = ''; reply.style.display = 'none'; exchange.scrollTop = 0; };
 heard.onclick = () => heard.classList.toggle('open');
 // each sentence of the reply is a span; the one being spoken is lit and kept in view
@@ -194,8 +200,7 @@ async function startEar() {
     submitUserSpeechOnPause: true,   // pausing hands the in-progress utterance to onSpeechEnd instead of dropping it
     // In manual mode, nothing reacts to sound until the orb is tapped to start dictating — an
     // untapped orb that still says "Hearing you" and pulses looks like it's capturing when it
-    // isn't, and a real utterance can be lost before anyone notices. (Liran, 09-09: lost his
-    // mom's first prompt to exactly this.)
+    // isn't, and a real utterance can be lost before anyone notices.
     onSpeechStart: () => { if (busy || muted) return; speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
     onFrameProcessed: (p, frame) => {
       if (busy || muted) return;
@@ -207,7 +212,6 @@ async function startEar() {
     // Muting means "stop hearing me from now on", not "throw away what I just said": an utterance
     // that began while the mic was still live goes up even if the mute tap lands during the pause
     // before the VAD closes it. Stopping the session, or a turn already in flight, still drops it.
-    // (Liran, 09-09: muted right after speaking and lost the sentence.)
     onSpeechEnd: (audio) => {
       const wasLive = speechOpen; speechOpen = false;
       if (!on || busy || voiceMode === 'manual') return;
@@ -222,7 +226,7 @@ const earOn = () => {
   if (!on) return;
   if (muted) { setMode('off', 'Muted'); return; }   // a turn that ends while muted lands back on Muted, not on a stale "Speaking"
   try { vad?.start(); } catch {}
-  setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');
+  setMode('listening', listeningLabel());
 };
 // The mic is left alone once opened: no watchdog, no automatic reopen (a rebuilt mic without a tap starts suspended on iPhone and the page looped).
 
@@ -232,7 +236,7 @@ const earOn = () => {
 function toggleDictate() {
   if (!on || muted) return;
   if (!dictating) { dictating = true; dictateFrames = []; touch(); setMode('listening', 'Recording — tap to send'); return; }
-  if (!flushDictate()) setMode('listening', 'Listening');
+  if (!flushDictate()) setMode('listening', listeningLabel());
 }
 // Ends the buffered utterance and sends it; true if there was anything to send. Muting goes through
 // here too, so a mute tap mid-dictation still delivers what was already recorded.
@@ -246,7 +250,6 @@ function flushDictate() {
   sendAudio(wavFromFloat32(merged));
   return true;
 }
-
 
 // ---- the turn: audio (or typed text) up, transcript + text + sentence audio down
 async function sendAudio(blob) { await turn({ body: blob, headers: { 'Content-Type': 'audio/wav' } }); }
@@ -279,7 +282,7 @@ async function turn(init) {
         if (ev.type === 'ignored') { setMode('listening', "Didn't catch that"); return; }
         if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }
         if (ev.type === 'status') setMode(ev.startup ? 'startup' : 'thinking', (ev.startup ? 'Starting up: ' : '') + ev.text.charAt(0).toUpperCase() + ev.text.slice(1));
-        if (ev.type === 'text') { if (!reply.childElementCount) addPiece(ev.text); add('agent', ev.text); }
+        if (ev.type === 'text') renderTurnText(ev.full || ev.text);
         if (ev.type === 'audio') { queue.push({ url: ev.url, span: addPiece(ev.text) }); playNext(mine); }
         if (ev.type === 'error') { setMode('error', ev.text); }
       }
@@ -337,12 +340,14 @@ async function start() {
   try { setMode('thinking', 'Opening the microphone'); await startEar(); }
   catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); hint.textContent = 'Allow the microphone for this page, then tap Start again.'; big.disabled = false; return; }
   on = true; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
-  setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening'); touch();
+  setMode('listening', listeningLabel()); touch();
 }
 function end() { clearTimeout(idleTimer); on = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
 big.onclick = () => (on ? end() : start());
-mute.onclick = () => { muted = !muted; mute.classList.toggle('on', muted); mute.setAttribute('aria-pressed', String(muted)); mute.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone'); $('micSlash').style.display = muted ? '' : 'none'; if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
-earMute.onclick = () => { earMuted = !earMuted; player.muted = earMuted; earMute.classList.toggle('on', earMuted); earMute.setAttribute('aria-pressed', String(earMuted)); earMute.setAttribute('aria-label', earMuted ? 'Unmute earphone' : 'Mute earphone'); $('earSlash').style.display = earMuted ? '' : 'none'; };
+// shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
+const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
+mute.onclick = () => { muted = !muted; setToggleButton(mute, 'micSlash', muted, 'Unmute microphone', 'Mute microphone'); if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
+earMute.onclick = () => { earMuted = !earMuted; player.muted = earMuted; setToggleButton(earMute, 'earSlash', earMuted, 'Unmute earphone', 'Mute earphone'); };
 // Opening the transcript pushes a history entry so the system/browser back action closes it
 // instead of leaving the page — standalone (home-screen) iOS has no browser chrome at all, so
 // there is no edge-swipe gesture to catch that the same way a normal Safari tab would; the
@@ -356,33 +361,24 @@ $('transcript').onclick = openHistory;
 $('close').onclick = () => { closeHistory(false); $('transcript').focus(); };
 document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if ($('history').classList.contains('open')) $('close').click(); if ($('settingsPanel').classList.contains('open')) closeSettings(); });
 
-// ---- settings: one field for now — listening mode (auto/manual), remembered per device
-const applyVoiceModeButtons = () => { document.querySelectorAll('.seg-mode').forEach((b) => { const active = b.dataset.mode === voiceMode; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
-const setVoiceMode = (m) => {
-  voiceMode = m === 'manual' ? 'manual' : 'auto';
-  try { localStorage.setItem('voiceMode', voiceMode); } catch {}
-  applyVoiceModeButtons();
-  if (dictating) { dictating = false; dictateFrames = []; }
-  if (on && !busy) setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');
-};
-applyVoiceModeButtons();
-document.querySelectorAll('.seg-mode').forEach((b) => { b.onclick = () => setVoiceMode(b.dataset.mode); });
-const applyTextFlowButtons = () => { document.querySelectorAll('.seg-text').forEach((b) => { const active = b.dataset.text === textFlow; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
-const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant'; try { localStorage.setItem('textFlow', textFlow); } catch {} applyTextFlowButtons(); };
-const applyRateButtons = () => { document.querySelectorAll('.seg-rate').forEach((b) => { const active = Number(b.dataset.rate) === speechRate; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
+// ---- settings: three fields (mode/text/speed), each remembered per device. All three segmented
+// controls share the same "highlight the active option" shape, so that part is a single helper.
+const segButtons = (cls, dataKey, isActive) => { const buttons = document.querySelectorAll(cls); const apply = () => buttons.forEach((b) => { const active = isActive(b.dataset[dataKey]); b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); return { buttons, apply }; };
+const voiceModeSeg = segButtons('.seg-mode', 'mode', (v) => v === voiceMode);
+const setVoiceMode = (m) => { voiceMode = m === 'manual' ? 'manual' : 'auto'; try { localStorage.setItem('voiceMode', voiceMode); } catch {} voiceModeSeg.apply(); if (dictating) { dictating = false; dictateFrames = []; } if (on && !busy) setMode('listening', listeningLabel()); };
+voiceModeSeg.apply();
+voiceModeSeg.buttons.forEach((b) => { b.onclick = () => setVoiceMode(b.dataset.mode); });
+const textFlowSeg = segButtons('.seg-text', 'text', (v) => v === textFlow);
+const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant'; try { localStorage.setItem('textFlow', textFlow); } catch {} textFlowSeg.apply(); };
+const rateSeg = segButtons('.seg-rate', 'rate', (v) => Number(v) === speechRate);
 // The same number governs the machine's own speaker (what the TV plays), so a change here is
 // pushed to the server, and the server's value wins on load — the two never drift apart.
-const setSpeechRate = (r, push = true) => {
-  r = Number(r); speechRate = RATES.includes(r) ? r : 1;
-  try { localStorage.setItem('speechRate', String(speechRate)); } catch {}
-  applyRateButtons(); applyRate();
-  if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {});
-};
-applyRateButtons();
+const setSpeechRate = (r, push = true) => { r = Number(r); speechRate = RATES.includes(r) ? r : 1; try { localStorage.setItem('speechRate', String(speechRate)); } catch {} rateSeg.apply(); applyRate(); if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {}); };
+rateSeg.apply();
 fetch('/api/state').then((r) => r.json()).then((s) => { const r = Number(s?.rate); if (RATES.includes(r) && r !== speechRate) setSpeechRate(r, false); }).catch(() => {});
-document.querySelectorAll('.seg-rate').forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
-applyTextFlowButtons();
-document.querySelectorAll('.seg-text').forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
+rateSeg.buttons.forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
+textFlowSeg.apply();
+textFlowSeg.buttons.forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
 const openSettings = () => $('settingsPanel').classList.add('open');
 const closeSettings = () => $('settingsPanel').classList.remove('open');
 $('settingsBtn').onclick = openSettings;
@@ -407,6 +403,87 @@ $('reset').onclick = async () => { await fetch('/api/reset', { method: 'POST' })
 
 fetch('/api/transcript').then((r) => r.json()).then((rows) => { for (const row of rows.slice(-20)) { add('user', row.user); add('agent', row.spoken); } }).catch(() => {});
 fetch('/api/state').then((r) => r.json()).then((s) => { if (s.voiceInput === false) hint.textContent = 'Voice input is off on the server (whisper not running). Typing still works.'; }).catch(() => {});
+
+// ---- catch-up polling: reads the server's event log while this tab is foregrounded, so
+// anything this device missed — a delayed relay reply from another session, or this same
+// phone's own turn if it was backgrounded mid-turn — still reaches it. There is no separate
+// rendering path here: a caught-up message goes through the exact same renderTurnText()/add()
+// the live SSE path uses, and its audio goes through the exact same queue/playNext() the live
+// path uses, so it inherits earMuted, the interrupt/skip handling, and the "don't play into a
+// hot mic" protection for free.
+let eventsCursor = 0, eventsBootId = null;
+try {
+  const saved = JSON.parse(localStorage.getItem('eventsState') || 'null');
+  if (saved && typeof saved.cursor === 'number') { eventsCursor = saved.cursor; eventsBootId = saved.bootId || null; }
+} catch {}
+const saveEventsState = () => { try { localStorage.setItem('eventsState', JSON.stringify({ cursor: eventsCursor, bootId: eventsBootId })); } catch {} };
+// Bounded set of event ids already rendered, persisted so a page reload doesn't re-render
+// events this tab already showed (the poll always asks for "after=<cursor>", but a reload
+// starts a fresh in-memory queue/reply — without this, the next poll's events look "new" again).
+let renderedEventIds = [];
+try { renderedEventIds = JSON.parse(localStorage.getItem('renderedEventIds') || '[]'); } catch {}
+const renderedSet = new Set(renderedEventIds);
+const markRendered = (id) => {
+  if (renderedSet.has(id)) return;
+  renderedSet.add(id); renderedEventIds.push(id);
+  if (renderedEventIds.length > 200) { const drop = renderedEventIds.splice(0, renderedEventIds.length - 200); for (const d of drop) renderedSet.delete(d); }
+  try { localStorage.setItem('renderedEventIds', JSON.stringify(renderedEventIds)); } catch {}
+};
+const catchUpAudioByTurn = {};
+// Plays a caught-up turn's sentences in order through the same player/queue/currentTurn
+// mechanism turn() uses: waits its turn behind anything already speaking, then takes the mic
+// offline exactly like a live reply does before putting audio on the shared <audio> element.
+async function playCatchUpAudio(turnId) {
+  const pieces = (catchUpAudioByTurn[turnId] || []).filter(Boolean);
+  delete catchUpAudioByTurn[turnId];
+  if (!pieces.length) return;
+  while (busy) await sleep(300);   // never fight a live turn for the mic/queue
+  busy = true; earOff(); unlock();
+  const mine = ++currentTurn;
+  queue = []; nowSpan = null;
+  for (const p of pieces) { queue.push({ url: p.url, span: addPiece(p.text) }); playNext(mine); }
+  await whilePlaying();
+  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); }
+}
+const handleCaughtUpEvent = async (ev) => {
+  if (renderedSet.has(ev.id)) return;
+  if (ev.type === 'transcript') {
+    add('user', ev.text);
+    if (!busy) showHeard(ev.text);   // don't clobber a live reply that's rendering right now
+  } else if (ev.type === 'audio') {
+    (catchUpAudioByTurn[ev.turnId] ||= [])[ev.index] = { url: ev.url, text: ev.text };
+  } else if (ev.type === 'text') {
+    renderTurnText(ev.full || ev.text);
+    await playCatchUpAudio(ev.turnId);
+  }
+  // other event types (status/done/error/ignored) carry nothing worth catching up on
+  markRendered(ev.id);
+};
+let pollInFlight = false;   // the 15s interval and a visibilitychange firing close together must not overlap
+const fetchAndApplyEvents = async () => {
+  const res = await fetch('/api/events?after=' + eventsCursor);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (data.bootId && data.bootId !== eventsBootId) {
+    // the server restarted since we last polled: its event log is gone, our cursor points
+    // nowhere it can ever match again — start over from 0 instead of polling forever for
+    // nothing, then re-fetch once with the corrected cursor so nothing waits another 15s.
+    eventsCursor = 0; eventsBootId = data.bootId; saveEventsState();
+    return fetchAndApplyEvents();
+  }
+  for (const ev of data.events || []) {
+    if (ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); }
+    await handleCaughtUpEvent(ev);
+  }
+};
+async function pollEvents() {
+  if (pollInFlight) return;
+  pollInFlight = true;
+  try { await fetchAndApplyEvents(); } catch {} finally { pollInFlight = false; }
+}
+setInterval(() => { if (document.visibilityState === 'visible') pollEvents(); }, 15000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollEvents(); });
+if (document.visibilityState === 'visible') pollEvents();
 if (!window.vad) { setMode('error', 'Voice library failed to load'); hint.textContent = 'The speech-detection library did not load. Check the connection and reload.'; }
 </script>
 </body>
