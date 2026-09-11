@@ -630,6 +630,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/') return html(res, 'index.html');
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
+    if (url.pathname === '/api/client-log' && req.method === 'POST') { const b = await readJsonRequest(req); log('phone: ' + String(b?.msg ?? '').slice(0, 400)); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
       const body = await readJsonRequest(req);
       const ok = setSpeechRate(body.rate);
@@ -647,7 +648,7 @@ const server = http.createServer(async (req, res) => {
       log(`session reset (was ${old.id}, ${old.turns} turns)`);
       return json(res, 200, { ok: true });
     }
-    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate }); }
+    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, away: isAway() }); }
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
       return json(res, 200, lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));

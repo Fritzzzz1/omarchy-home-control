@@ -184,7 +184,7 @@ const keepAwake = async () => { try { wakeLock = await navigator.wakeLock?.reque
 // further down, but this only ever runs after load, so the hoisted declaration is in place.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
-  if (on) keepAwake();
+  if (on) { keepAwake(); checkMic(); }
   pollEvents();
 });
 
@@ -200,7 +200,7 @@ const wavFromFloat32 = (samples, rate = 16000) => {
 async function startEar() {
   if (vad) { await vad.start(); return; }
   vad = await window.vad.MicVAD.new({
-    baseAssetPath: CDN_VAD, onnxWASMBasePath: CDN_ORT, model: 'v5',
+    baseAssetPath: CDN_VAD, onnxWASMBasePath: CDN_ORT, model: 'v5', audioContext: audioCtx,
     positiveSpeechThreshold: 0.6, negativeSpeechThreshold: 0.4, redemptionMs: PAUSE_MS, minSpeechMs: 300, preSpeechPadMs: 400,
     submitUserSpeechOnPause: true,   // pausing hands the in-progress utterance to onSpeechEnd instead of dropping it
     // In manual mode, nothing reacts to sound until the orb is tapped to start dictating — an
@@ -208,6 +208,7 @@ async function startEar() {
     // isn't, and a real utterance can be lost before anyone notices.
     onSpeechStart: () => { if (busy || muted) return; speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
     onFrameProcessed: (p, frame) => {
+      frames++;
       if (busy || muted) return;
       if (voiceMode === 'manual' && !dictating) return;   // pre-tap: stay visually inert
       orb.style.setProperty('--level', String(1 + Math.min(0.35, p.isSpeech * 0.4)));
@@ -230,11 +231,37 @@ const earOff = () => { try { vad?.pause(); } catch {} orb.style.setProperty('--l
 const earOn = () => {
   if (!on) return;
   if (muted) { setMode('off', 'Muted'); return; }   // a turn that ends while muted lands back on Muted, not on a stale "Speaking"
+  if (micStale) return checkMic();   // the phone was backgrounded during this turn
   try { vad?.start(); } catch {}
   setMode('listening', listeningLabel());
 };
-// The mic is left alone once opened: no watchdog, no automatic reopen (a rebuilt mic without a tap starts suspended on iPhone and the page looped).
-
+// Backgrounding on iPhone breaks the mic: the track gets muted or ended, and the AudioContext,
+// even when it reports "running" after resume(), delivers silence (seen every time in the logs).
+// So coming back to the foreground throws the whole audio graph away and builds a new one, and
+// the orb says Listening only once VAD frames are actually arriving. A context created outside a
+// tap has come up running on iPhone in practice; if it doesn't, only a tap can help, and the orb
+// asks for one — the same repair then runs inside the tap. One attempt per foreground, no loop.
+// A return during a reply, or while muted, defers the repair to the next earOn.
+let audioCtx = null, micDead = false, micStale = false, frames = 0;   // frames: VAD frames seen, proof the graph is alive
+const clientLog = (msg) => fetch('/api/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg }) }).catch(() => {});
+const framesArrive = async (ms = 1500) => { const before = frames; await new Promise((r) => setTimeout(r, ms)); return frames > before; };
+async function repairMic() {
+  try { await vad?.destroy(); } catch {}
+  try { await audioCtx?.close(); } catch {}
+  vad = null; audioCtx = new AudioContext();
+  await startEar();
+  if (audioCtx.state !== 'running') await audioCtx.resume();
+  if (audioCtx.state !== 'running') throw new Error('audio context ' + audioCtx.state);
+  if (!(await framesArrive())) throw new Error('no audio frames');
+}
+async function checkMic() {
+  if (!on || !vad) return;
+  if (busy || muted) { micStale = true; return; }
+  micStale = false;
+  setMode('thinking', 'Opening the microphone');
+  try { await repairMic(); micDead = false; earOn(); }
+  catch (e) { micDead = true; earOff(); setMode('error', 'Tap the orb to reopen the mic'); clientLog('mic repair failed: ' + (e.message || e) + ' ctx=' + audioCtx?.state); }
+}
 // ---- manual mode: mic stays open and VAD keeps running (for the level meter), but nothing is
 // sent until the orb is tapped twice — no silence timeout ends it early. Frames are buffered from
 // the same VAD audio pipeline (onFrameProcessed), so there's no second microphone stream.
@@ -326,8 +353,9 @@ function interrupt() { if (!busy) return; currentTurn++; queue = []; player.paus
 async function orbTap() {
   if (busy) return interrupt();
   if (!on) return;
+  if (micDead) { setMode('thinking', 'Opening the microphone'); try { await repairMic(); micDead = false; } catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); return; } return earOn(); }
   if (voiceMode === 'manual') return toggleDictate();
-  try { const c = vad?.audioContext; if (c && c.state !== 'running') await c.resume(); } catch {}
+  try { if (audioCtx && audioCtx.state !== 'running') await audioCtx.resume(); } catch {}
   try { await vad?.start(); } catch {}
   setMode('listening', 'Listening');
 }
@@ -343,18 +371,29 @@ $('pause').onclick = () => {
 const setBigIcon = (stopping) => { $('bigPlayIcon').style.display = stopping ? 'none' : ''; $('bigStopIcon').style.display = stopping ? '' : 'none'; big.setAttribute('aria-label', stopping ? 'End conversation' : 'Start conversation'); };
 async function start() {
   unlock(); keepAwake();
+  if (!audioCtx) audioCtx = new AudioContext();   // made inside the tap so iPhone never sees it suspended
   big.disabled = true;
   try { setMode('thinking', 'Opening the microphone'); await startEar(); }
   catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); hint.textContent = 'Allow the microphone for this page, then tap Start again.'; big.disabled = false; return; }
   on = true; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
   setMode('listening', listeningLabel()); touch();
 }
-function end() { clearTimeout(idleTimer); on = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
+function end() { clearTimeout(idleTimer); on = false; micDead = micStale = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
 mute.onclick = () => { muted = !muted; setToggleButton(mute, 'micSlash', muted, 'Unmute microphone', 'Mute microphone'); if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
-earMute.onclick = () => { earMuted = !earMuted; player.muted = earMuted; setToggleButton(earMute, 'earSlash', earMuted, 'Unmute earphone', 'Mute earphone'); };
+const setEarMuted = (v) => { earMuted = v; player.muted = v; setToggleButton(earMute, 'earSlash', v, 'Unmute earphone', 'Mute earphone'); };
+earMute.onclick = () => setEarMuted(!earMuted);
+// Server state at load: speech rate, whether voice input works, and away. At home the reply plays
+// on this machine's speakers, so the phone starts with its earphone muted; away, the phone is the
+// only speaker and starts unmuted. Read once per page load. (setSpeechRate is a const further
+// down; this callback runs after load, so it is defined by then.)
+fetch('/api/state').then((r) => r.json()).then((s) => {
+  const r = Number(s?.rate); if (RATES.includes(r) && r !== speechRate) setSpeechRate(r, false);
+  if (s?.voiceInput === false) hint.textContent = 'Voice input is off on the server (whisper not running). Typing still works.';
+  if (s?.away === false) setEarMuted(true);
+}).catch(() => {});
 // Opening the transcript pushes a history entry so the system/browser back action closes it
 // instead of leaving the page — standalone (home-screen) iOS has no browser chrome at all, so
 // there is no edge-swipe gesture to catch that the same way a normal Safari tab would; the
@@ -382,7 +421,7 @@ const rateSeg = segButtons('.seg-rate', 'rate', (v) => Number(v) === speechRate)
 // pushed to the server, and the server's value wins on load — the two never drift apart.
 const setSpeechRate = (r, push = true) => { r = Number(r); speechRate = RATES.includes(r) ? r : 1; try { localStorage.setItem('speechRate', String(speechRate)); } catch {} rateSeg.apply(); applyRate(); if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {}); };
 rateSeg.apply();
-fetch('/api/state').then((r) => r.json()).then((s) => { const r = Number(s?.rate); if (RATES.includes(r) && r !== speechRate) setSpeechRate(r, false); }).catch(() => {});
+
 rateSeg.buttons.forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
 textFlowSeg.apply();
 textFlowSeg.buttons.forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
@@ -409,7 +448,6 @@ $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preven
 $('reset').onclick = async () => { await fetch('/api/reset', { method: 'POST' }); logEl.innerHTML = ''; reply.textContent = ''; reply.style.display = 'none'; heard.classList.add('hidden'); hint.style.display = ''; hint.textContent = 'New conversation. The first answer takes a minute while I wake up.'; };
 
 fetch('/api/transcript').then((r) => r.json()).then((rows) => { for (const row of rows.slice(-20)) { add('user', row.user); add('agent', row.spoken); } }).catch(() => {});
-fetch('/api/state').then((r) => r.json()).then((s) => { if (s.voiceInput === false) hint.textContent = 'Voice input is off on the server (whisper not running). Typing still works.'; }).catch(() => {});
 
 // ---- catch-up polling: reads the server's event log while this tab is foregrounded, so
 // anything this device missed — a delayed relay reply from another session, or this same
