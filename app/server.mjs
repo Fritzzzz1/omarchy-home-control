@@ -401,7 +401,7 @@ const isAway = () => {
   try { mtime = fs.statSync(AWAY_FILE).mtimeMs; } catch {}
   if (mtime === awayMtime) return awayCache;
   awayMtime = mtime;
-  awayCache = mtime === null ? false : !!readJson(AWAY_FILE, {}).muted;
+  awayCache = mtime === null ? false : !!readJson(AWAY_FILE, {}).away;
   return awayCache;
 };
 let localQueue = Promise.resolve();
