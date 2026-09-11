@@ -7,7 +7,8 @@ work.
 ## First thing, every session
 
 Check for `~/.config/home-control/config.env`. If it's missing, Home Control isn't set up on
-this machine yet — before any other repository work, tell the user and offer to run setup.
+this machine yet — before any other repository work, tell the user and invite them to run setup,
+rather than just describing what setup involves.
 
 The complete setup procedure is written at `setup/SETUP.md` — open and follow it directly. It's
 plain markdown, step-by-step instructions for whichever agent is running it, not specific to any

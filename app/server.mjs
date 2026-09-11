@@ -136,6 +136,34 @@ const tryLogin = (key, res, req) => {
   return true;
 };
 
+// ---------- the event log: every output event, from a live turn or a delayed relay reply,
+// in one ordered, bounded list. This is the reliability backbone behind /api/events — a phone
+// that was backgrounded (or asleep) polls it and catches up on anything the per-turn SSE
+// stream never reached it, including a relay reply that lands after its own turn already
+// closed. Kept small so a long-running process never grows it without bound: capped by count
+// and by age, whichever trims first.
+const EVENT_LOG_MAX = 500;
+const EVENT_LOG_MS = 30 * 60 * 1000;
+// Generated once per process start. A client persists {cursor, bootId}; if this doesn't match
+// what it has stored, the server restarted (and its in-memory eventLog is gone/rebuilt) — the
+// client must reset its cursor to 0 rather than polling forever with a cursor that can never
+// match again (a stale cursor higher than anything in a fresh log returns nothing, silently,
+// forever).
+const BOOT_ID = crypto.randomBytes(8).toString('hex');
+let eventLog = [];
+let eventSeq = 0;
+// `at` is the human-readable stamp (for reading the log by eye); `ts` is the same instant as a
+// number, so the age trim below never has to re-parse a date string.
+const logEvent = (turnId, ev) => {
+  eventSeq += 1;
+  const now = Date.now();
+  const entry = { id: eventSeq, at: new Date(now).toISOString(), ts: now, turnId, ...ev };
+  eventLog.push(entry);
+  const cutoff = now - EVENT_LOG_MS;
+  while (eventLog.length > EVENT_LOG_MAX || (eventLog.length && eventLog[0].ts < cutoff)) eventLog.shift();
+  return entry;
+};
+
 // ---------- claude ----------
 const claudeSession = () => readJson(CLAUDE_SESSION_FILE, { id: null, turns: 0 });
 const saveClaudeSession = (s) => writeJson(CLAUDE_SESSION_FILE, s);
@@ -176,12 +204,20 @@ const spawnClaude = () => {
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
       if (turnHandler) { turnHandler(ev); continue; }
-      // No turn is waiting (another session woke the agent): speak its reply anyway instead of dropping it.
+      // No turn is waiting (another session woke the agent): speak its reply anyway instead of
+      // dropping it (never silently lost — the room hears it even if nobody's phone is around),
+      // and log the same rendered events under a relay turn id so a polling phone picks them up.
       if (ev.type === 'result' && !ev.is_error && ev.result) {
+        const relayTurnId = `relay-${crypto.randomBytes(6).toString('hex')}`;
         (async () => {
-          const groups = sentenceGroups(stripMarkdown(ev.result));
+          const spoken = stripMarkdown(ev.result);
+          const groups = sentenceGroups(spoken);
           const renders = groups.map((g) => speak(g).catch(() => null));
-          for (let i = 0; i < renders.length; i++) { const a = await renders[i]; if (a) playLocally(a.file, i, groups[i]); }
+          for (let i = 0; i < renders.length; i++) {
+            const a = await renders[i];
+            if (a) { playLocally(a.file, i, groups[i]); logEvent(relayTurnId, { type: 'audio', url: a.url, index: i, text: groups[i] }); }
+          }
+          logEvent(relayTurnId, { type: 'text', text: spoken, full: ev.result });
         })();
       }
     }
@@ -351,6 +387,23 @@ const setSpeechRate = (r) => {
   log(`speech rate -> ${r}x`);
   return true;
 };
+// Away mode: when true, replies are still sent to the phone as normal, but this machine's own
+// speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
+// (it has filesystem access) when Liran says he's leaving/back — no route needed for a single
+// bool nothing else ever sets. Checked at play time (once per sentence), so a plain file write
+// takes effect immediately without a server restart or an HTTP round trip to itself — but the
+// value is cached against the file's mtime, so the common case is one stat() rather than a read
+// plus a JSON.parse on every sentence. A missing file means not away.
+const AWAY_FILE = path.join(STATE, 'away.json');
+let awayCache = false, awayMtime = null;
+const isAway = () => {
+  let mtime = null;
+  try { mtime = fs.statSync(AWAY_FILE).mtimeMs; } catch {}
+  if (mtime === awayMtime) return awayCache;
+  awayMtime = mtime;
+  awayCache = mtime === null ? false : !!readJson(AWAY_FILE, {}).away;
+  return awayCache;
+};
 let localQueue = Promise.resolve();
 let localTurn = 0;
 let localChild = null;
@@ -365,6 +418,7 @@ const playLocally = (file, index = null, text = '') => {
   if (text && index !== null) turnSentences[index] = text;
   localQueue = localQueue.then(() => new Promise((resolve) => {
     if (myTurn !== localTurn) return resolve(); // skipped before its turn came up
+    if (isAway()) return resolve(); // away mode: phone still gets it, this machine stays silent
     if (index !== null) nowPlaying = { index, text };
     const clear = () => { if (nowPlaying && nowPlaying.index === index) nowPlaying = null; };
     const tryFfplay = (origErr) => {
@@ -484,7 +538,15 @@ const handleTurn = async (req, res) => {
   busy = true;
   resetSpokenState();
   lastTurnAt = Date.now();
-  const send = sse(res);
+  const turnId = crypto.randomBytes(6).toString('hex');
+  const sendRaw = sse(res);
+  // Every event the phone gets live over this turn's SSE stream is also appended to the shared
+  // event log, so a phone that reconnects later — or another device polling /api/events — can
+  // catch up on the same turn.
+  // The id is assigned by the log, then stamped onto the very event the phone receives live, so
+  // the client can advance its catch-up cursor past it right away — otherwise the poller has no
+  // way to know a live-streamed event was already shown, and re-renders every turn a second time.
+  const send = (ev) => { const entry = logEvent(turnId, ev); sendRaw({ ...ev, id: entry.id }); };
   const started = Date.now();
   try {
     let text, lang;
@@ -568,6 +630,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/') return html(res, 'index.html');
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
+    if (url.pathname === '/api/client-log' && req.method === 'POST') { const b = await readJsonRequest(req); log('phone: ' + String(b?.msg ?? '').slice(0, 400)); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
       const body = await readJsonRequest(req);
       const ok = setSpeechRate(body.rate);
@@ -577,16 +640,29 @@ const server = http.createServer(async (req, res) => {
       const old = claudeSession();
       stopClaude();
       saveClaudeSession({ id: null, turns: 0, previous: old.id });
-      // New conversation means new conversation: the drawer's file is cleared.
-      // Nothing is lost — per-turn ms/cost/session are already in voice.log.
+      // New conversation means new conversation: the drawer's file is cleared, and so is the
+      // event log — otherwise old content stays reachable via /api/events (a catching-up phone
+      // would render it into the fresh conversation) even after the reset button was pressed.
       try { fs.rmSync(TRANSCRIPT, { force: true }); } catch {}
+      eventLog = [];
       log(`session reset (was ${old.id}, ${old.turns} turns)`);
       return json(res, 200, { ok: true });
     }
-    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate }); }
+    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, away: isAway() }); }
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
       return json(res, 200, lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));
+    }
+    // The reliability backbone: a phone polls this while foregrounded and catches up on
+    // anything it missed — most importantly a relay reply that landed after its own turn's
+    // SSE connection had already closed. `after` is the highest event id already seen; with
+    // none given (first load), the recent tail of the log is returned instead of nothing.
+    if (url.pathname === '/api/events' && req.method === 'GET') {
+      const after = Number(url.searchParams.get('after'));
+      const list = Number.isFinite(after) && after > 0 ? eventLog.filter((e) => e.id > after) : eventLog.slice(-50);
+      // No cursor in the response: the client tracks the highest id it has actually applied,
+      // which is the only value that is safe for it to poll from next.
+      return json(res, 200, { events: list, bootId: BOOT_ID });
     }
     if (url.pathname.startsWith('/audio/')) {
       const file = path.join(AUDIO_DIR, path.basename(url.pathname));

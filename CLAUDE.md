@@ -2,9 +2,6 @@
 
 ## Claude Code
 
-When Home Control isn't set up, offer to open and follow `setup/SETUP.md` rather than just
-describing what setup involves — invite the user to run it.
-
 ### Cross-session delegation
 
 The setup skill's step 8 asks, generically, whether the voice channel may hand tasks to other
