@@ -278,6 +278,10 @@ async function turn(init) {
       for (const p of parts) {
         const line = p.split('\n').find((l) => l.startsWith('data: ')); if (!line) continue;
         const ev = JSON.parse(line.slice(6));
+        // Every live event carries the same id the server just logged for it. Mark it rendered
+        // and advance the catch-up cursor past it now — otherwise the poller has no way to know
+        // this event was already shown live, and re-renders the whole turn a second time.
+        if (typeof ev.id === 'number') { markRendered(ev.id); if (ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); } }
         if (mine !== currentTurn) return;
         if (ev.type === 'ignored') { setMode('listening', "Didn't catch that"); return; }
         if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }

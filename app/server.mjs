@@ -154,9 +154,11 @@ let eventLog = [];
 let eventSeq = 0;
 const logEvent = (turnId, source, ev) => {
   eventSeq += 1;
-  eventLog.push({ id: eventSeq, at: new Date().toISOString(), turnId, source, ...ev });
+  const entry = { id: eventSeq, at: new Date().toISOString(), turnId, source, ...ev };
+  eventLog.push(entry);
   const cutoff = Date.now() - EVENT_LOG_MS;
   while (eventLog.length > EVENT_LOG_MAX || (eventLog.length && Date.parse(eventLog[0].at) < cutoff)) eventLog.shift();
+  return entry;
 };
 
 // ---------- claude ----------
@@ -531,7 +533,10 @@ const handleTurn = async (req, res) => {
   // Every event the phone gets live over this turn's SSE stream is also appended to the
   // shared event log (source: 'phone') so a phone that reconnects later — or another device
   // polling /api/events — can catch up on the same turn.
-  const send = (ev) => { sendRaw(ev); logEvent(turnId, 'phone', ev); };
+  // The id is assigned by the log, then stamped onto the very event the phone receives live,
+  // so the client can mark it rendered — otherwise the catch-up poller has no way to know a
+  // live-streamed event was already shown, and re-renders every turn a second time.
+  const send = (ev) => { const entry = logEvent(turnId, 'phone', ev); sendRaw({ ...ev, id: entry.id }); };
   const started = Date.now();
   try {
     let text, lang;
