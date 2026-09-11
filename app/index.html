@@ -181,7 +181,14 @@ const addPiece = (text) => { reply.style.display = 'block'; const s = document.c
 // iOS plays audio only from an element a tap has started; the Start tap plays a silent clip to unlock it for every later reply.
 const unlock = () => { if (unlocked) return; unlocked = true; player.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA='; player.play().catch(() => {}); };
 const keepAwake = async () => { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} };
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && on) keepAwake(); });
+// One listener, double duty: coming back to the foreground both re-takes the wake lock (it is
+// dropped while hidden) and polls for anything missed while backgrounded. pollEvents is defined
+// further down, but this only ever runs after load, so the hoisted declaration is in place.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (on) keepAwake();
+  pollEvents();
+});
 
 // ---- the ear: Silero VAD on the open microphone; each utterance becomes one WAV and one turn
 const wavFromFloat32 = (samples, rate = 16000) => {
@@ -278,10 +285,8 @@ async function turn(init) {
       for (const p of parts) {
         const line = p.split('\n').find((l) => l.startsWith('data: ')); if (!line) continue;
         const ev = JSON.parse(line.slice(6));
-        // Every live event carries the same id the server just logged for it. Mark it rendered
-        // and advance the catch-up cursor past it now — otherwise the poller has no way to know
-        // this event was already shown live, and re-renders the whole turn a second time.
-        if (typeof ev.id === 'number') { markRendered(ev.id); if (ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); } }
+        // Advance the catch-up cursor past this id — see server.mjs's send() for why it is stamped.
+        if (typeof ev.id === 'number' && ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); }
         if (mine !== currentTurn) return;
         if (ev.type === 'ignored') { setMode('listening', "Didn't catch that"); return; }
         if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }
@@ -415,24 +420,17 @@ fetch('/api/state').then((r) => r.json()).then((s) => { if (s.voiceInput === fal
 // the live SSE path uses, and its audio goes through the exact same queue/playNext() the live
 // path uses, so it inherits earMuted, the interrupt/skip handling, and the "don't play into a
 // hot mic" protection for free.
+// The cursor alone is the dedup mechanism: ids are monotonic, the poll always asks for
+// "after=<cursor>", and the server only ever returns ids above it — on both the live SSE path
+// and the catch-up path the cursor is advanced past every id seen, so nothing renders twice.
+// It is persisted (with the server's boot id) so a reload doesn't re-render what this tab
+// already showed, and so a server restart can be detected and the cursor reset to 0.
 let eventsCursor = 0, eventsBootId = null;
 try {
   const saved = JSON.parse(localStorage.getItem('eventsState') || 'null');
   if (saved && typeof saved.cursor === 'number') { eventsCursor = saved.cursor; eventsBootId = saved.bootId || null; }
 } catch {}
 const saveEventsState = () => { try { localStorage.setItem('eventsState', JSON.stringify({ cursor: eventsCursor, bootId: eventsBootId })); } catch {} };
-// Bounded set of event ids already rendered, persisted so a page reload doesn't re-render
-// events this tab already showed (the poll always asks for "after=<cursor>", but a reload
-// starts a fresh in-memory queue/reply — without this, the next poll's events look "new" again).
-let renderedEventIds = [];
-try { renderedEventIds = JSON.parse(localStorage.getItem('renderedEventIds') || '[]'); } catch {}
-const renderedSet = new Set(renderedEventIds);
-const markRendered = (id) => {
-  if (renderedSet.has(id)) return;
-  renderedSet.add(id); renderedEventIds.push(id);
-  if (renderedEventIds.length > 200) { const drop = renderedEventIds.splice(0, renderedEventIds.length - 200); for (const d of drop) renderedSet.delete(d); }
-  try { localStorage.setItem('renderedEventIds', JSON.stringify(renderedEventIds)); } catch {}
-};
 const catchUpAudioByTurn = {};
 // Plays a caught-up turn's sentences in order through the same player/queue/currentTurn
 // mechanism turn() uses: waits its turn behind anything already speaking, then takes the mic
@@ -450,7 +448,6 @@ async function playCatchUpAudio(turnId) {
   if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); }
 }
 const handleCaughtUpEvent = async (ev) => {
-  if (renderedSet.has(ev.id)) return;
   if (ev.type === 'transcript') {
     add('user', ev.text);
     if (!busy) showHeard(ev.text);   // don't clobber a live reply that's rendering right now
@@ -461,7 +458,6 @@ const handleCaughtUpEvent = async (ev) => {
     await playCatchUpAudio(ev.turnId);
   }
   // other event types (status/done/error/ignored) carry nothing worth catching up on
-  markRendered(ev.id);
 };
 let pollInFlight = false;   // the 15s interval and a visibilitychange firing close together must not overlap
 const fetchAndApplyEvents = async () => {
@@ -475,9 +471,17 @@ const fetchAndApplyEvents = async () => {
     eventsCursor = 0; eventsBootId = data.bootId; saveEventsState();
     return fetchAndApplyEvents();
   }
-  for (const ev of data.events || []) {
-    if (ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); }
-    await handleCaughtUpEvent(ev);
+  // One localStorage write for the whole batch, not one per event — and none at all when the
+  // log had nothing new. The save is in a finally so a throw mid-batch still persists how far
+  // we actually got.
+  const before = eventsCursor;
+  try {
+    for (const ev of data.events || []) {
+      if (ev.id > eventsCursor) eventsCursor = ev.id;
+      await handleCaughtUpEvent(ev);
+    }
+  } finally {
+    if (eventsCursor !== before) saveEventsState();
   }
 };
 async function pollEvents() {
@@ -486,7 +490,7 @@ async function pollEvents() {
   try { await fetchAndApplyEvents(); } catch {} finally { pollInFlight = false; }
 }
 setInterval(() => { if (document.visibilityState === 'visible') pollEvents(); }, 15000);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollEvents(); });
+// the visibilitychange poll lives with keepAwake's listener, further up
 if (document.visibilityState === 'visible') pollEvents();
 if (!window.vad) { setMode('error', 'Voice library failed to load'); hint.textContent = 'The speech-detection library did not load. Check the connection and reload.'; }
 </script>
