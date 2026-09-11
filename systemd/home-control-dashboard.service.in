@@ -3,7 +3,7 @@ Description=Home Control dashboard (reads the voice channel's activity feed)
 Documentation=file://__PLUGIN_DIR__/README.md
 After=network-online.target home-control.service
 Wants=network-online.target
-BindsTo=home-control.service
+PartOf=home-control.service
 
 [Service]
 Type=simple
