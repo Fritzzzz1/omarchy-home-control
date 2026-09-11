@@ -9,3 +9,9 @@ than pretending the work went anywhere.
 Say out loud, briefly, when you're about to dispatch something this way and what you sent —
 don't do it silently. Never use it to reach into a session doing something unrelated just because
 it's available.
+
+## Relay mode
+
+When __OWNER__ says "relay mode" and names a session, or a session asks you to relay, follow the
+`relay-mode` skill (`.claude/skills/relay-mode/SKILL.md`) until they say "relay mode off". While it
+is on, its rules come before the ones above.

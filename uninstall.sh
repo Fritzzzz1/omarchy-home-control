@@ -5,7 +5,8 @@
 #
 # By default this removes the moving parts and leaves your data alone: the
 # transcript, the passphrase and the logs survive unless you ask for --purge.
-# It never touches VOICE_ROOT — that is your own folder, not ours.
+# It never touches VOICE_ROOT — that is your own folder, not ours — except the two relay
+# skills install.sh put in its .claude/skills.
 
 set -euo pipefail
 
@@ -45,7 +46,7 @@ load_config() {
     [[ $line =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     case "$key" in
-      VOICE_PORT|VOICE_STATE|HOME_CONTROL_TAILNET_PORT|HOME_CONTROL_APP_DIR|WHISPER_MODEL)
+      VOICE_PORT|VOICE_ROOT|VOICE_STATE|HOME_CONTROL_TAILNET_PORT|HOME_CONTROL_APP_DIR|WHISPER_MODEL)
         printf -v "$key" '%s' "$value" ;;
     esac
   done < "$CONFIG_FILE"
@@ -78,6 +79,14 @@ fi
 
 echo "== Command"
 rm_path "$BIN_LINK"
+
+echo "== Relay skills"
+if [[ -n ${VOICE_ROOT:-} ]]; then
+  rm_path "$VOICE_ROOT/.claude/skills/relay-mode"
+  rm_path "$VOICE_ROOT/.claude/skills/voice-relay"
+else
+  note "VOICE_ROOT unknown; nothing to remove"
+fi
 
 echo "== Config"
 rm_path "$CONFIG_FILE"
@@ -112,7 +121,7 @@ cat <<'DONE'
 Uninstalled.
 
 Not touched, on purpose:
-  - VOICE_ROOT (your own folder)
+  - VOICE_ROOT (your own folder), apart from the relay skills above
   - user linger  (loginctl disable-linger $USER, if nothing else needs it)
   - node, claude, tailscale, mpv
 DONE

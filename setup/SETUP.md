@@ -43,12 +43,22 @@ collect the credential into protected per-user storage, never into logs, config 
 git, or anything spoken aloud. A local/open-source provider needs its endpoint or CLI, ask and
 validate it directly. Don't scan the network or guess credentials — probe only what's selected.
 
-## 2. Language
+## 2. Agent folder
+
+Ask which folder the voice agent runs from — before anything else is installed. Explain in one
+line each: it is the folder the agent can read and edit without a sandbox (only `secrets/`,
+`credentials*`, `.env*` are denied); the agent loads that folder's `CLAUDE.md` and
+`.claude/skills/`; its conversation history is tied to that path, so changing it later starts a
+fresh conversation and the dashboard loses the old one. Recommend a dedicated folder (for example
+`~/dev`) over `$HOME`. Create it if it doesn't exist. Write the answer as `VOICE_ROOT`
+(`install.sh --voice-root`).
+
+## 3. Language
 
 Ask once: "what's your default spoken language?" (default: English). Carry it into transcription
 and TTS defaults below.
 
-## 3. Input source
+## 4. Input source
 
 Ask: does this machine have a microphone available? Only if yes, also ask whether they'd like
 to skip the phone/remote-access setup entirely and use this machine's mic as the only input —
@@ -57,9 +67,9 @@ second question; the phone is the input.
 
 If a phone is in play (default path, or alongside a local mic), explain briefly: the phone is
 personal and portable — no hardware needed here, and it goes wherever the user goes. Tailscale
-(§6) is what lets that phone keep working off the home network, so mention it's coming.
+(§7) is what lets that phone keep working off the home network, so mention it's coming.
 
-## 4. Transcription
+## 5. Transcription
 
 If local mic input was chosen or the phone is in play, ask whether they already have a
 transcription solution reachable on their private network. If yes: collect connection details,
@@ -67,7 +77,7 @@ authenticate if needed, adapt to its protocol, and validate with a real transcri
 
 If none: see `setup/fallbacks/transcription.md`.
 
-## 5. Text-to-speech
+## 6. Text-to-speech
 
 This is required, working infrastructure — not optional research. Ask whether they already have
 a TTS solution reachable on their private network; if yes, wire it through an adapter and
@@ -79,7 +89,7 @@ the confirmed provider (or a local model, if one's already running) — cost sta
 On by default; say so plainly. Write their answer into `config.env` as an explicit boolean —
 asking it and not persisting it is worse than not asking; validate it if enabled.
 
-## 6. Remote access (optional)
+## 7. Remote access (optional)
 
 Only relevant if a phone is in play. Check locally first — `tailscale status` — whether this
 machine is already connected to a tailnet; don't reach out to or touch any external device before
@@ -90,10 +100,10 @@ default. Don't describe a localhost-only setup as phone-reachable.
 
 To validate reachability, check `tailscale serve status`, not raw port binding — a service
 bound to `127.0.0.1` can still be phone-reachable, because `tailscale serve` proxies it to its
-own public tailnet HTTPS port. The voice server and the dashboard (§8) each get their own serve
+own public tailnet HTTPS port. The voice server and the dashboard (§9) each get their own serve
 mapping and port; check the one you're actually validating, not either one generically.
 
-## 7. Cross-session delegation (if the runtime supports it)
+## 8. Cross-session delegation (if the runtime supports it)
 
 Explain why this matters before asking: without it, the voice channel can only act with whatever
 tools this one conversation has. Ask whether the voice channel may hand off tasks to other
@@ -109,12 +119,11 @@ invent an equivalent for a provider that doesn't have one.
 answer (`app/delegation.on.md` / `app/delegation.off.md`) — update those if the mechanism for the
 confirmed runtime differs from what they describe.
 
-## 8. Install and launch
+## 9. Install and launch
 
 Install the server, chosen client(s), both dashboards, rendered config, and systemd user
 services, using distinct configurable ports for the voice server, transcription, TTS, and
-dashboard. Use `$HOME` as the working-directory default; let the user narrow it, never assume a
-dev directory exists.
+dashboard. Use the agent folder chosen in §2 as `VOICE_ROOT`.
 
 `install.sh`/`uninstall.sh` can do this mechanical part for you — once you know the real values,
 `./install.sh --whisper-model ... --pwa-name ...` is there to help, not required. Use it if it
@@ -133,15 +142,18 @@ fits what you've learned about this machine; adapt or skip pieces of it if it do
   dashboard that silently shows nothing.
 - Phone client (`app/index.html`), if in play: walk the user through adding it to their phone's
   home screen as a PWA.
+- Relay skills, only if delegation (§8) is on: copy `skills/relay-mode/` (for the voice agent)
+  and `skills/voice-relay/` (for other sessions that want to talk to the user through it) into
+  `VOICE_ROOT/.claude/skills/`. Skip both when delegation is off.
 - Give them a control command for status/logs/health/start/stop/restart and the phone URL.
 - If the confirmed runtime isn't Claude Code: `server.mjs` currently hardcodes `spawn('claude',
   ...)` to run the agent. Go edit that invocation for the actual chosen provider as part of this
   step — this is real, required code work, not something to defer or fake.
 
-## 9. Verify, then finish
+## 10. Verify, then finish
 
 Before calling this done, verify: service startup, provider auth, transcription, TTS, and (if
-configured) HTTPS phone reachability via `tailscale serve status` (§6) — all by actually
+configured) HTTPS phone reachability via `tailscale serve status` (§7) — all by actually
 exercising them, not just checking that processes are running.
 
 Then do **one real round trip with the human**: have them speak into whichever input was
@@ -150,7 +162,7 @@ output(s) — phone, local speakers, and/or the dashboard. Only after they confi
 you write `~/.config/home-control/config.env` and consider setup complete. Don't self-certify
 from automated checks alone — this last step is a human witness, not a script.
 
-If the confirmed runtime is Claude Code and delegation (§7) is on, close by telling the user what
+If the confirmed runtime is Claude Code and delegation (§8) is on, close by telling the user what
 `CLAUDE.md` says: delegation only reaches a session that's actually running at the moment the
 voice channel tries to use it — remind them to leave this session or another one up, in
 remote-control/auto mode, if they want the voice channel to have real tool access through it.

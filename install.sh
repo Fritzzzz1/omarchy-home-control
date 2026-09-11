@@ -224,6 +224,19 @@ sed -e "s|__PWA_NAME__|$PWA_NAME|g" -e "s|__LABEL__|$LABEL|g" \
 # "Home" no matter what the manifest says.
 sed -i "s|__PWA_NAME__|$PWA_NAME|g" "$APP_DIR/index.html" "$APP_DIR/login.html"
 
+# The relay skills go where the agent runs, so both the voice agent and any session started in
+# VOICE_ROOT find them. Relaying is SendMessage, so they ship only with delegation on.
+step "2d. Relay skills"
+SKILLS_DIR="$VOICE_ROOT/.claude/skills"
+if [[ $PEER_DELEGATION == on ]]; then
+  mkdir -p "$SKILLS_DIR/relay-mode" "$SKILLS_DIR/voice-relay"
+  cp "$PLUGIN_DIR/skills/relay-mode/SKILL.md" "$SKILLS_DIR/relay-mode/SKILL.md"
+  cp "$PLUGIN_DIR/skills/voice-relay/SKILL.md" "$SKILLS_DIR/voice-relay/SKILL.md"
+  note "relay-mode, voice-relay -> $SKILLS_DIR"
+else
+  note "skipped (delegation off)"
+fi
+
 # --- 3. state -----------------------------------------------------------------
 step "3. State directory $STATE_DIR"
 mkdir -p "$STATE_DIR"
@@ -270,8 +283,9 @@ VOICE_SPEECH_REWRITE=$SPEECH_REWRITE
 
 # May the agent hand work to another live Claude Code session on this machine?
 # "on" adds ListAgents and SendMessage to the tools it is allowed to use.
-# Change it here and re-render voice-mode.md to keep the two in step. A missing
-# tool is a reason to delegate; a denied action is not.
+# Change it here, then re-render voice-mode.md and add or remove the relay skills
+# in VOICE_ROOT/.claude/skills to keep them in step. A missing tool is a reason
+# to delegate; a denied action is not.
 VOICE_PEER_DELEGATION=$PEER_DELEGATION
 
 # Optional: pin the model / thinking effort. Unset = the claude CLI's defaults.

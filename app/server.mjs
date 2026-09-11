@@ -171,7 +171,15 @@ const spawnClaude = () => {
       if (!line.trim()) continue;
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
-      turnHandler?.(ev);
+      if (turnHandler) { turnHandler(ev); continue; }
+      // No turn is waiting (another session woke the agent): speak its reply anyway instead of dropping it.
+      if (ev.type === 'result' && !ev.is_error && ev.result) {
+        (async () => {
+          const groups = sentenceGroups(stripMarkdown(ev.result));
+          const renders = groups.map((g) => speak(g).catch(() => null));
+          for (let i = 0; i < renders.length; i++) { const a = await renders[i]; if (a) playLocally(a.file, i, groups[i]); }
+        })();
+      }
     }
   });
   child.on('exit', (code) => {
