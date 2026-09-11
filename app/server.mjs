@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn, execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBody } from './request-body.mjs';
 
@@ -78,6 +78,10 @@ const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() |
 const parseCookies = (req) => Object.fromEntries(
   (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]),
 );
+const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
+const readJsonRequest = async (req) => readJsonBody((await readBody(req)).toString('utf8'));
+const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file))); };
 
 // ---------- the gate: one passphrase, a cookie once it is typed ----------
 const WORDS_FILES = ['/usr/share/dict/words', '/usr/share/dict/american-english', '/usr/share/dict/cracklib-small', '/usr/share/words'];
@@ -175,7 +179,7 @@ const spawnClaude = () => {
     if (claudeProc === child) claudeProc = null;
     turnHandler?.({ type: 'process_exit', code, stderr });
   });
-  log(`claude process started (${session.id ? 'resuming ' + session.id : 'new session'})`);
+  log(`agent process started (${session.id ? 'resuming ' + session.id : 'new session'})`);
   return child;
 };
 const stopClaude = () => { const p = claudeProc; claudeProc = null; if (p) { try { p.stdin.end(); } catch {} setTimeout(() => { try { p.kill(); } catch {} }, 2000); } };
@@ -298,6 +302,7 @@ const hebrewShare = (t) => {
   if (!letters) return 0;
   return (letters.match(/[\u0590-\u05FF]/g) || []).length / letters.length;
 };
+const detectLang = (t) => (hebrewShare(t) > 0.4 ? 'he' : 'en');
 const TTS_PORT = Number(process.env.TTS_PORT || 4457);
 let ttsWorker = null;
 const startTts = () => {
@@ -375,7 +380,7 @@ const speakViaCli = (text, voice, out) => new Promise((resolve, reject) => {
   child.on('close', (code) => { fs.rmSync(txt, { force: true }); code === 0 && fs.existsSync(out) ? resolve() : reject(new Error(`tts failed: ${err.trim().split('\n').pop() || code}`)); });
   child.on('error', reject);
 });
-const speak = async (text, lang = hebrewShare(text) > 0.4 ? 'he' : 'en') => {
+const speak = async (text, lang = detectLang(text)) => {
   const id = crypto.randomBytes(8).toString('hex');
   const out = path.join(AUDIO_DIR, `${id}.mp3`);
   const voice = VOICES[lang];
@@ -390,6 +395,8 @@ const speak = async (text, lang = hebrewShare(text) > 0.4 ? 'he' : 'en') => {
   if (!done) await speakViaCli(text, voice, out);
   return { url: `/audio/${id}.mp3`, file: out, lang };
 };
+// One sentence's audio: tell the phone, and start it playing locally too.
+const emitAudio = (send, audio, index, text) => { send({ type: 'audio', url: audio.url, index, text }); playLocally(audio.file, index, text); };
 // Sentences are spoken as the model writes them: each complete sentence goes to TTS at once,
 // renders in parallel with the next, and is sent to the phone in order.
 const SENTENCE_END = /[.!?׃]["'”)]?(?=\s)|\n/g;
@@ -405,7 +412,7 @@ const makeSpeaker = (send, lang) => {
     spoken.push(text);
     const t0 = Date.now();
     const render = speak(text, hebrewShare(text) > 0.4 ? 'he' : lang).then((a) => { log(`tts ${index}: ${Date.now() - t0}ms for ${text.length} chars`); return a; }).catch((e) => { log(`tts failed on a sentence: ${e.message}`); return null; });
-    chain = chain.then(async () => { const a = await render; if (a) { send({ type: 'audio', url: a.url, index, text }); playLocally(a.file, index, text); } });
+    chain = chain.then(async () => { const a = await render; if (a) emitAudio(send, a, index, text); });
   };
   return {
     // everything up to the last sentence end is spoken now; the tail waits for more words
@@ -440,6 +447,26 @@ const sse = (res) => {
   return (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
 };
 
+// Fallback for when the model streamed no speakable sentences: rewrite the result text for
+// the ear if it looks like a page, then speak it in parallel-rendered, in-order chunks —
+// same playback shape as makeSpeaker, just not streamed sentence-by-sentence.
+const speakFallback = async (turnText, lang, send, onAudio) => {
+  let spoken = stripMarkdown(turnText);
+  if (SPEECH_REWRITE_ON && looksLikePage(turnText)) {
+    send({ type: 'status', text: 'fitting for voice' });
+    spoken = stripMarkdown(await rewriteForSpeech(turnText, lang));
+  }
+  if (!spoken) spoken = lang === 'he' ? 'סיימתי, אבל לא יצא לי טקסט להקריא.' : 'Done, but I have no text to read back.';
+  const groups = sentenceGroups(spoken);
+  const renders = groups.map((g) => speak(g, detectLang(spoken)));
+  for (let i = 0; i < renders.length; i++) {
+    const audio = await renders[i];
+    onAudio();
+    emitAudio(send, audio, i, groups[i]);
+  }
+  return spoken;
+};
+
 const handleTurn = async (req, res) => {
   if (busy) { log('turn refused: busy'); return json(res, 409, { error: 'busy' }); }
   busy = true;
@@ -454,30 +481,24 @@ const handleTurn = async (req, res) => {
       send({ type: 'status', text: 'transcribing' });
       text = await transcribe(wav, (stage) => send({ type: 'status', text: stage, startup: true }));
       if (!text) { log(`ignored: nothing usable in ${wav.length} bytes of audio`); send({ type: 'ignored' }); return; }
-      lang = hebrewShare(text) > 0.4 ? 'he' : 'en';
+      lang = detectLang(text);
       send({ type: 'transcript', text });
       log(`heard (${Date.now() - started}ms): ${text.slice(0, 80)}`);
     } else {
-      const body = readJsonBody((await readBody(req)).toString('utf8'));
+      const body = await readJsonRequest(req);
       text = String(body.text || '').trim();
       if (!text) { send({ type: 'error', text: 'empty' }); return; }
-      lang = body.lang === 'he' ? 'he' : hebrewShare(text) > 0.4 ? 'he' : 'en';
+      lang = body.lang === 'he' ? 'he' : detectLang(text);
     }
     const first = !claudeSession().id;
     send({ type: 'status', text: first ? 'waking up' : 'thinking' });
     warmTts(lang);
     let firstAudioAt = 0;
-    const speaker = makeSpeaker((ev) => { if (!firstAudioAt) firstAudioAt = Date.now(); send(ev); }, lang);
+    const markFirstAudio = () => { if (!firstAudioAt) firstAudioAt = Date.now(); };
+    const speaker = makeSpeaker((ev) => { markFirstAudio(); send(ev); }, lang);
     const turn = await runTurn(text, (ev) => (ev.type === 'delta' ? speaker.feed(ev.text) : send(ev)));
     let spoken = await speaker.finish();
-    if (!spoken) {
-      spoken = stripMarkdown(turn.text);
-      if (SPEECH_REWRITE_ON && looksLikePage(turn.text)) { send({ type: 'status', text: 'fitting for voice' }); spoken = stripMarkdown(await rewriteForSpeech(turn.text, lang)); }
-      if (!spoken) spoken = lang === 'he' ? 'סיימתי, אבל לא יצא לי טקסט להקריא.' : 'Done, but I have no text to read back.';
-      const groups = sentenceGroups(spoken);
-      const renders = groups.map((g) => speak(g, hebrewShare(spoken) > 0.4 ? 'he' : 'en'));
-      for (let i = 0; i < renders.length; i++) { const audio = await renders[i]; if (!firstAudioAt) firstAudioAt = Date.now(); send({ type: 'audio', url: audio.url, index: i, text: groups[i] }); playLocally(audio.file, i, groups[i]); }
-    }
+    if (!spoken) spoken = await speakFallback(turn.text, lang, send, markFirstAudio);
     send({ type: 'text', text: spoken, full: turn.text });
     fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: turn.text, spoken, ms: Date.now() - started, cost: turn.cost }) + '\n');
     log(`turn ok ${Date.now() - started}ms first-audio=${firstAudioAt ? firstAudioAt - started : '-'}ms sentences=${speaker.count} cost=$${(turn.cost || 0).toFixed(3)} session=${turn.sessionId}`);
@@ -498,9 +519,16 @@ const handleTurn = async (req, res) => {
   }
 };
 
-const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
-const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
-const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file))); };
+// Icons and the manifest are public: iOS asks for them when the app is added to the
+// home screen, and the login page needs them too. Fixed allowlist — no path building.
+const PUBLIC_FILES = {
+  '/manifest.json': 'application/manifest+json',
+  '/apple-touch-icon.png': 'image/png',
+  '/icon-192.png': 'image/png',
+  '/icon-512.png': 'image/png',
+  '/favicon-32.png': 'image/png',
+  '/favicon.ico': 'image/png',
+};
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
@@ -515,16 +543,6 @@ const server = http.createServer(async (req, res) => {
     if (url.searchParams.get('key') && !isLoggedIn(req)) {
       if (tryLogin(url.searchParams.get('key'), res, req)) { res.writeHead(303, { Location: '/' }); return res.end(); }
     }
-    // Icons and the manifest are public: iOS asks for them when the app is added to the
-    // home screen, and the login page needs them too. Fixed allowlist — no path building.
-    const PUBLIC_FILES = {
-      '/manifest.json': 'application/manifest+json',
-      '/apple-touch-icon.png': 'image/png',
-      '/icon-192.png': 'image/png',
-      '/icon-512.png': 'image/png',
-      '/favicon-32.png': 'image/png',
-      '/favicon.ico': 'image/png',
-    };
     if (PUBLIC_FILES[url.pathname]) {
       const file = path.join(HERE, url.pathname === '/favicon.ico' ? 'favicon-32.png' : url.pathname.slice(1));
       if (!fs.existsSync(file)) { res.writeHead(404); return res.end(); }
@@ -539,7 +557,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
-      const body = readJsonBody((await readBody(req)).toString('utf8'));
+      const body = await readJsonRequest(req);
       const ok = setSpeechRate(body.rate);
       return json(res, ok ? 200 : 400, { ok, rate: speechRate });
     }

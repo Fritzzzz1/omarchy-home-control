@@ -146,6 +146,7 @@ let on = false, busy = false, muted = false, earMuted = false, vad = null, unloc
 let queue = [], playing = false, currentTurn = 0, paused = false, nowSpan = null, idleTimer = null;
 let voiceMode = 'auto';   // 'auto' (default) or 'manual'
 try { if (localStorage.getItem('voiceMode') === 'manual') voiceMode = 'manual'; } catch {}
+const listeningLabel = () => (voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');   // shown on the orb whenever the mic goes live
 let dictating = false, dictateFrames = [];   // manual mode: raw 16kHz frames buffered between orb taps
 let speechOpen = false;   // auto mode: an utterance the VAD started while the mic was live
 let textFlow = 'instant';   // 'instant' (default) or 'flowing'
@@ -220,7 +221,7 @@ const earOn = () => {
   if (!on) return;
   if (muted) { setMode('off', 'Muted'); return; }   // a turn that ends while muted lands back on Muted, not on a stale "Speaking"
   try { vad?.start(); } catch {}
-  setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');
+  setMode('listening', listeningLabel());
 };
 // The mic is left alone once opened: no watchdog, no automatic reopen (a rebuilt mic without a tap starts suspended on iPhone and the page looped).
 
@@ -230,7 +231,7 @@ const earOn = () => {
 function toggleDictate() {
   if (!on || muted) return;
   if (!dictating) { dictating = true; dictateFrames = []; touch(); setMode('listening', 'Recording — tap to send'); return; }
-  if (!flushDictate()) setMode('listening', 'Listening');
+  if (!flushDictate()) setMode('listening', listeningLabel());
 }
 // Ends the buffered utterance and sends it; true if there was anything to send. Muting goes through
 // here too, so a mute tap mid-dictation still delivers what was already recorded.
@@ -244,7 +245,6 @@ function flushDictate() {
   sendAudio(wavFromFloat32(merged));
   return true;
 }
-
 
 // ---- the turn: audio (or typed text) up, transcript + text + sentence audio down
 async function sendAudio(blob) { await turn({ body: blob, headers: { 'Content-Type': 'audio/wav' } }); }
@@ -335,12 +335,14 @@ async function start() {
   try { setMode('thinking', 'Opening the microphone'); await startEar(); }
   catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); hint.textContent = 'Allow the microphone for this page, then tap Start again.'; big.disabled = false; return; }
   on = true; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
-  setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening'); touch();
+  setMode('listening', listeningLabel()); touch();
 }
 function end() { clearTimeout(idleTimer); on = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
 big.onclick = () => (on ? end() : start());
-mute.onclick = () => { muted = !muted; mute.classList.toggle('on', muted); mute.setAttribute('aria-pressed', String(muted)); mute.setAttribute('aria-label', muted ? 'Unmute microphone' : 'Mute microphone'); $('micSlash').style.display = muted ? '' : 'none'; if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
-earMute.onclick = () => { earMuted = !earMuted; player.muted = earMuted; earMute.classList.toggle('on', earMuted); earMute.setAttribute('aria-pressed', String(earMuted)); earMute.setAttribute('aria-label', earMuted ? 'Unmute earphone' : 'Mute earphone'); $('earSlash').style.display = earMuted ? '' : 'none'; };
+// shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
+const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
+mute.onclick = () => { muted = !muted; setToggleButton(mute, 'micSlash', muted, 'Unmute microphone', 'Mute microphone'); if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
+earMute.onclick = () => { earMuted = !earMuted; player.muted = earMuted; setToggleButton(earMute, 'earSlash', earMuted, 'Unmute earphone', 'Mute earphone'); };
 // Opening the transcript pushes a history entry so the system/browser back action closes it
 // instead of leaving the page — standalone (home-screen) iOS has no browser chrome at all, so
 // there is no edge-swipe gesture to catch that the same way a normal Safari tab would; the
@@ -354,33 +356,24 @@ $('transcript').onclick = openHistory;
 $('close').onclick = () => { closeHistory(false); $('transcript').focus(); };
 document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if ($('history').classList.contains('open')) $('close').click(); if ($('settingsPanel').classList.contains('open')) closeSettings(); });
 
-// ---- settings: one field for now — listening mode (auto/manual), remembered per device
-const applyVoiceModeButtons = () => { document.querySelectorAll('.seg-mode').forEach((b) => { const active = b.dataset.mode === voiceMode; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
-const setVoiceMode = (m) => {
-  voiceMode = m === 'manual' ? 'manual' : 'auto';
-  try { localStorage.setItem('voiceMode', voiceMode); } catch {}
-  applyVoiceModeButtons();
-  if (dictating) { dictating = false; dictateFrames = []; }
-  if (on && !busy) setMode('listening', voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');
-};
-applyVoiceModeButtons();
-document.querySelectorAll('.seg-mode').forEach((b) => { b.onclick = () => setVoiceMode(b.dataset.mode); });
-const applyTextFlowButtons = () => { document.querySelectorAll('.seg-text').forEach((b) => { const active = b.dataset.text === textFlow; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
-const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant'; try { localStorage.setItem('textFlow', textFlow); } catch {} applyTextFlowButtons(); };
-const applyRateButtons = () => { document.querySelectorAll('.seg-rate').forEach((b) => { const active = Number(b.dataset.rate) === speechRate; b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); };
+// ---- settings: three fields (mode/text/speed), each remembered per device. All three segmented
+// controls share the same "highlight the active option" shape, so that part is a single helper.
+const segButtons = (cls, dataKey, isActive) => { const buttons = document.querySelectorAll(cls); const apply = () => buttons.forEach((b) => { const active = isActive(b.dataset[dataKey]); b.setAttribute('aria-pressed', String(active)); b.setAttribute('aria-checked', String(active)); }); return { buttons, apply }; };
+const voiceModeSeg = segButtons('.seg-mode', 'mode', (v) => v === voiceMode);
+const setVoiceMode = (m) => { voiceMode = m === 'manual' ? 'manual' : 'auto'; try { localStorage.setItem('voiceMode', voiceMode); } catch {} voiceModeSeg.apply(); if (dictating) { dictating = false; dictateFrames = []; } if (on && !busy) setMode('listening', listeningLabel()); };
+voiceModeSeg.apply();
+voiceModeSeg.buttons.forEach((b) => { b.onclick = () => setVoiceMode(b.dataset.mode); });
+const textFlowSeg = segButtons('.seg-text', 'text', (v) => v === textFlow);
+const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant'; try { localStorage.setItem('textFlow', textFlow); } catch {} textFlowSeg.apply(); };
+const rateSeg = segButtons('.seg-rate', 'rate', (v) => Number(v) === speechRate);
 // The same number governs the machine's own speaker (what the TV plays), so a change here is
 // pushed to the server, and the server's value wins on load — the two never drift apart.
-const setSpeechRate = (r, push = true) => {
-  r = Number(r); speechRate = RATES.includes(r) ? r : 1;
-  try { localStorage.setItem('speechRate', String(speechRate)); } catch {}
-  applyRateButtons(); applyRate();
-  if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {});
-};
-applyRateButtons();
+const setSpeechRate = (r, push = true) => { r = Number(r); speechRate = RATES.includes(r) ? r : 1; try { localStorage.setItem('speechRate', String(speechRate)); } catch {} rateSeg.apply(); applyRate(); if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {}); };
+rateSeg.apply();
 fetch('/api/state').then((r) => r.json()).then((s) => { const r = Number(s?.rate); if (RATES.includes(r) && r !== speechRate) setSpeechRate(r, false); }).catch(() => {});
-document.querySelectorAll('.seg-rate').forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
-applyTextFlowButtons();
-document.querySelectorAll('.seg-text').forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
+rateSeg.buttons.forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
+textFlowSeg.apply();
+textFlowSeg.buttons.forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
 const openSettings = () => $('settingsPanel').classList.add('open');
 const closeSettings = () => $('settingsPanel').classList.remove('open');
 $('settingsBtn').onclick = openSettings;
