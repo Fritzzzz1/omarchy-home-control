@@ -1,5 +1,5 @@
 [Unit]
-Description=Jarvis voice channel (phone -> whisper -> claude -> edge-tts)
+Description=Home Control voice channel (phone -> whisper -> claude -> edge-tts)
 Documentation=file://__PLUGIN_DIR__/README.md
 After=network-online.target
 Wants=network-online.target

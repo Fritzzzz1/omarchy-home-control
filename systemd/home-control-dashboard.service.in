@@ -1,0 +1,17 @@
+[Unit]
+Description=Home Control dashboard (reads the voice channel's activity feed)
+Documentation=file://__PLUGIN_DIR__/README.md
+After=network-online.target home-control.service
+Wants=network-online.target
+PartOf=home-control.service
+
+[Service]
+Type=simple
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__CONFIG_FILE__
+ExecStart=__NODE__ __APP_DIR__/monitor.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

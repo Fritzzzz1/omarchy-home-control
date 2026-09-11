@@ -1,7 +1,7 @@
 {
-  "name": "Home · voice",
-  "short_name": "Home",
-  "description": "Talk to the agent on the home machine.",
+  "name": "__PWA_NAME__ · voice",
+  "short_name": "__PWA_NAME__",
+  "description": "Talk to the agent on __LABEL__ from your phone.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

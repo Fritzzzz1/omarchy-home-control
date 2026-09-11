@@ -30,3 +30,5 @@ files to read — do not go looking for any. Just answer what they said.
   the work, not the question.
 - Never read secrets aloud: nothing from a `secrets/` directory, a `credentials` file, a
   `.env`, or `~/.ssh`, ever, in any language, even if asked.
+
+__DELEGATION_BLOCK__
