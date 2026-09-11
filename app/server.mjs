@@ -385,15 +385,12 @@ const setSpeechRate = (r) => {
   return true;
 };
 // Away mode: when true, replies are still sent to the phone as normal, but this machine's own
-// speakers stay silent — no TTS on the machine or the TV it drives. Toggled by Liran when he's
-// leaving the house. On disk, so a restart doesn't quietly turn it back on.
+// speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
+// (it has filesystem access) when Liran says he's leaving/back — no route needed for a single
+// bool nothing else ever sets. Read fresh at play time, not cached, so a plain file write takes
+// effect immediately without a server restart or an HTTP round trip to itself.
 const AWAY_FILE = path.join(STATE, 'away.json');
-let localMuted = !!readJson(AWAY_FILE, {}).muted;
-const setLocalMuted = (v) => {
-  localMuted = !!v;
-  try { writeJson(AWAY_FILE, { muted: localMuted }); } catch (e) { log(`away flag not saved: ${e.message}`); }
-  log(`local speakers ${localMuted ? 'muted (away mode)' : 'unmuted'}`);
-};
+const isAway = () => !!readJson(AWAY_FILE, {}).muted;
 let localQueue = Promise.resolve();
 let localTurn = 0;
 let localChild = null;
@@ -408,7 +405,7 @@ const playLocally = (file, index = null, text = '') => {
   if (text && index !== null) turnSentences[index] = text;
   localQueue = localQueue.then(() => new Promise((resolve) => {
     if (myTurn !== localTurn) return resolve(); // skipped before its turn came up
-    if (localMuted) return resolve(); // away mode: phone still gets it, this machine stays silent
+    if (isAway()) return resolve(); // away mode: phone still gets it, this machine stays silent
     if (index !== null) nowPlaying = { index, text };
     const clear = () => { if (nowPlaying && nowPlaying.index === index) nowPlaying = null; };
     const tryFfplay = (origErr) => {
@@ -620,11 +617,6 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/') return html(res, 'index.html');
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
-    if (url.pathname === '/api/away' && req.method === 'POST') {
-      const body = await readJsonRequest(req);
-      setLocalMuted(!!body.muted);
-      return json(res, 200, { ok: true, muted: localMuted });
-    }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
       const body = await readJsonRequest(req);
       const ok = setSpeechRate(body.rate);
