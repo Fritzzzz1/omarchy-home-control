@@ -426,7 +426,7 @@ const setSpeechRate = (r) => {
 };
 // Away mode: when true, replies are still sent to the phone as normal, but this machine's own
 // speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
-// (it has filesystem access) when Liran says he's leaving/back — no route needed for a single
+// (it has filesystem access) when the user says they're leaving or back — no route needed for a single
 // bool nothing else ever sets. Checked at play time (once per sentence), so a plain file write
 // takes effect immediately without a server restart or an HTTP round trip to itself — but the
 // value is cached against the file's mtime, so the common case is one stat() rather than a read
