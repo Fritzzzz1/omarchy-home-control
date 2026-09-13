@@ -25,6 +25,8 @@
 #statsBar{display:flex;gap:8px;padding:20px 26px 0;flex:none;flex-wrap:wrap}#statsBar .stat{flex:1;min-width:80px;background:#ffffff04;border:1px solid var(--line);border-radius:12px;padding:10px 8px;text-align:center}#statsBar .stat-label{font-size:9px;letter-spacing:1.4px;text-transform:uppercase;color:var(--dim)}#statsBar .stat-value{font-size:16px;font-weight:500;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#clearLog{flex:none;width:40px;border:1px solid var(--line);border-radius:12px;background:transparent;color:var(--dim);display:grid;place-items:center;padding:0}#clearLog svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#clearLog:hover{background:#ffffff0d;color:var(--ink)}
 /* One collapsible <details> per turn (user message + its agent reply), collapsed to a one-line preview by default. */
 .turn{border-bottom:1px solid var(--line);padding-bottom:14px}.turn:last-child{border-bottom:0;padding-bottom:0}.turn summary{cursor:pointer;list-style:none;display:flex;gap:6px;font-size:13px;color:var(--dim);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 0}.turn summary::-webkit-details-marker{display:none}.turn summary:before{content:'▸';flex:none}.turn[open] summary:before{content:'▾'}.turn .prev-user{color:var(--ink);overflow:hidden;text-overflow:ellipsis}.turn .prev-agent{color:var(--green);overflow:hidden;text-overflow:ellipsis}.turn[open] .prev-agent{display:none}.turn .msg{margin-top:10px}.turn.relay .prev-user{color:var(--dim);flex:none}
+/* The mute button is also held down (pause while held): no long-press menu, selection or scrolling on it. */
+#mute{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;touch-action:none}
 @media(min-width:900px){body{padding-right:380px}body>header{padding-top:32px}#history{display:flex;inset:20px 20px 20px auto;width:360px;border:1px solid var(--line);border-radius:22px;z-index:1}#close{display:none}#top{padding-top:clamp(24px,6vh,90px)}.orb-stage{height:280px;margin:18px 0}#exchange,#heard{width:min(100%,660px);align-self:center}#controls{padding-bottom:32px}#row #transcript{display:none}}
 @media(min-width:1400px){body{padding-right:460px}#history{width:420px;right:24px;top:24px;bottom:24px}.orb-stage{height:320px}#orb{width:210px;height:210px}.orb-stage:before{width:280px;height:280px}.orb-stage:after{width:320px;height:320px}}
 @media(max-width:599px){header{padding:calc(env(safe-area-inset-top) + 18px) 22px 12px}.brand-sub{display:none}#top{padding-top:16px;gap:14px}.orb-stage{height:210px;margin:0}.orb-stage:before{width:210px;height:210px}.orb-stage:after{width:246px;height:246px}#orb{width:155px;height:155px}#modeText{font-size:25px}#exchange{padding:8px 26px 12px}#heard{margin:8px 24px}#controls{padding-top:10px;gap:14px}.typebar{margin-bottom:calc(env(safe-area-inset-bottom) + 20px)}}
@@ -254,14 +256,15 @@ async function startEar() {
       orb.style.setProperty('--level', String(1 + Math.min(0.35, p.isSpeech * 0.4)));
       if (dictating && frame) dictateFrames.push(frame.slice());
     },
-    onVADMisfire: () => { speechOpen = false; if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
+    onVADMisfire: () => { speechOpen = false; if (muted) clientLog('mute: what was said was too short to send'); if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
     // Muting means "stop hearing me from now on", not "throw away what I just said": an utterance
     // that began while the mic was still live goes up even if the mute tap lands during the pause
     // before the VAD closes it. Stopping the session, or a turn already in flight, still drops it.
     onSpeechEnd: (audio) => {
       const wasLive = speechOpen; speechOpen = false;
       if (!on || busy || voiceMode === 'manual') return;
-      if (muted && !wasLive) return;
+      if (muted && !wasLive) { clientLog('mute: speech not sent, it began after the mute'); return; }
+      if (muted) clientLog(`mute: sent ${(audio.length / 16000).toFixed(1)} s of speech`);
       sendAudio(wavFromFloat32(audio));
     },
   });
@@ -457,7 +460,40 @@ function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yield
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
-mute.onclick = () => { muted = !muted; setToggleButton(mute, 'micSlash', muted, 'Unmute microphone', 'Mute microphone'); if (muted) { const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted'); } else earOn(); };
+const toggleMute = () => {
+  muted = !muted; setToggleButton(mute, 'micSlash', muted, 'Unmute microphone', 'Mute microphone');
+  if (muted) {
+    clientLog(`mute tapped: speechOpen=${speechOpen} speaking=${vad?.frameProcessor?.speaking} speechFrames=${vad?.frameProcessor?.speechFrameCount} dictating=${dictating}`);
+    const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted');
+  } else earOn();
+};
+// The mute button, one press at a time: a tap toggles mute (muting sends what was already said); a
+// hold pauses the recording only while held and resumes it on release, without sending. The hold
+// just unplugs the mic from the VAD, so nothing is processed meanwhile: an utterance in progress,
+// or a manual dictation, carries on from where it was.
+const HOLD_MS = 350, HOLD_LABEL = 'Paused — release to go on';
+let holdTimer = null, holding = false, labelBeforeHold = '';
+const holdStart = () => {
+  const src = vad?._mediaStreamAudioSourceNode;
+  if (!on || muted || busy || !vad?.listening || !src) return;
+  try { src.disconnect(); } catch { return; }
+  holding = true; labelBeforeHold = modeText.textContent;
+  mute.classList.add('on'); modeText.textContent = HOLD_LABEL;
+};
+const holdEnd = () => {
+  if (!holding) return;
+  holding = false; mute.classList.remove('on');
+  try { vad._mediaStreamAudioSourceNode.connect(vad._vadNode); } catch {}
+  if (modeText.textContent === HOLD_LABEL) modeText.textContent = labelBeforeHold;
+};
+mute.addEventListener('pointerdown', (e) => {
+  try { mute.setPointerCapture(e.pointerId); } catch {}   // a finger that slides off the button still ends the press here
+  clearTimeout(holdTimer); holdTimer = setTimeout(() => { holdTimer = null; holdStart(); }, HOLD_MS);
+});
+mute.addEventListener('pointerup', () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; toggleMute(); } else holdEnd(); });
+mute.addEventListener('pointercancel', () => { clearTimeout(holdTimer); holdTimer = null; holdEnd(); });
+mute.addEventListener('contextmenu', (e) => e.preventDefault());
+mute.onclick = (e) => { if (e.detail === 0) toggleMute(); };   // keyboard (Enter/Space); pointer presses are handled above
 const setEarMuted = (v) => { earMuted = v; player.muted = v; setToggleButton(earMute, 'earSlash', v, 'Unmute earphone', 'Mute earphone'); };
 earMute.onclick = () => setEarMuted(!earMuted);
 // Server state at load: speech rate, whether voice input works, and away. At home the reply plays
@@ -571,7 +607,7 @@ async function playCatchUpAudio(turnId, full, from) {
   const pieces = (catchUpAudioByTurn[turnId] || []).filter(Boolean);
   delete catchUpAudioByTurn[turnId];
   if (!pieces.length) { renderTurnText(full, turnId, from); fetchStats(); return; }
-  while (speechOpen || (voiceMode === 'manual' && dictating)) await sleep(300);
+  while (speechOpen || holding || (voiceMode === 'manual' && dictating)) await sleep(300);
   const joining = busy;
   if (!joining) { busy = true; earOff(); unlock(); ++currentTurn; queue = []; nowSpan = null; reply.textContent = ''; }
   const mine = currentTurn;
