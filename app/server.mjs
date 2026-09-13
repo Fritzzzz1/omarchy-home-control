@@ -238,7 +238,7 @@ const spawnClaude = () => {
             const a = await renders[i];
             if (a) { playLocally(a.file, i, groups[i]); logEvent(relayTurnId, { type: 'audio', url: a.url, index: i, text: groups[i] }); }
           }
-          logEvent(relayTurnId, { type: 'text', text: spoken, full: ev.result });
+          logEvent(relayTurnId, { type: 'text', text: spoken, full: ev.result, from: relaySender(ev.session_id || claudeSession().id) });
         })();
       }
     }
@@ -716,6 +716,21 @@ const server = http.createServer(async (req, res) => {
     else res.end();
   }
 });
+
+// Which session asked for a relay reply. The session file records each message from another session,
+// with its sender's name, before the reply to it, and turns run one at a time, so the last such
+// message is this reply's. Empty when it can't be found; the page then just says "Relayed".
+const relaySender = (sessionId) => {
+  try {
+    const lines = fs.readFileSync(path.join(CLAUDE_PROJECT_DIR, `${sessionId}.jsonl`), 'utf8').trimEnd().split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"peer"')) continue;
+      const e = JSON.parse(lines[i]);
+      if (e.type === 'user' && e.origin?.kind === 'peer') return e.origin.name || '';
+    }
+  } catch {}
+  return '';
+};
 
 // The conversation panel's three numbers. Turns and tokens come from the session's own file, so
 // they include turns another session started, not only the phone's. The CLI writes one line per

@@ -166,6 +166,11 @@ try { if (localStorage.getItem('textFlow') === 'flowing') textFlow = 'flowing'; 
 const RATES = [0.75, 1, 1.25, 1.5, 1.75];
 let speechRate = 1;
 try { const r = Number(localStorage.getItem('speechRate')); if (RATES.includes(r)) speechRate = r; } catch {}
+// What you said is never lost: when the page is left (iOS mutes a web page's mic in the background)
+// or another app takes the mic, what was being said is sent, listening stops, and the mic is left
+// alone until you come back to the page (auto mode) or tap the orb.
+let yielded = false;   // the mic was given up; returning to the page (auto) or a tap takes it back
+const YIELDED_LABEL = 'Paused for another app — tap the orb to listen';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const touch = () => { clearTimeout(idleTimer); if (on) idleTimer = setTimeout(() => { end(); hint.style.display = ''; hint.textContent = 'Mic closed after ten quiet minutes. The conversation is kept; tap Start to go on.'; }, IDLE_END_MS); };
 
@@ -179,28 +184,31 @@ const setPaused = (p) => { paused = p; $('pause').setAttribute('aria-label', p ?
 // Messages in #log are grouped into one collapsible <details> per turn, collapsed to a one-line
 // preview. A user message starts a turn and the agent's reply joins it. A reply that another
 // session asked for (a relay turn, id "relay-…") has no user message of its own, so it opens its
-// own group instead of landing inside whatever turn came before it.
+// own group instead of landing inside whatever turn came before it, and never becomes the group a
+// later answer joins: a relayed reply can arrive between your words and the answer to them.
 let currentGroup = null;
 const previewLine = (t) => { const line = (t || '').split('\n')[0]; return line.length > 80 ? line.slice(0, 80) + '…' : line; };
-const startTurnGroup = (relay) => {
-  currentGroup = document.createElement('details'); currentGroup.className = relay ? 'turn relay' : 'turn';
+const startTurnGroup = (relay, from) => {
+  const group = document.createElement('details'); group.className = relay ? 'turn relay' : 'turn';
   const summary = document.createElement('summary');
   summary.innerHTML = '<span class="prev-user"></span><span class="prev-agent"></span>';
-  if (relay) summary.firstChild.textContent = 'Relayed';
-  currentGroup.appendChild(summary);
-  logEl.appendChild(currentGroup);
+  if (relay) summary.firstChild.textContent = from ? 'Relayed from ' + from : 'Relayed';
+  group.appendChild(summary);
+  logEl.appendChild(group);
+  if (!relay) currentGroup = group;
+  return group;
 };
-const add = (cls, body, relay = false) => {
-  if (cls === 'user' || relay || !currentGroup) startTurnGroup(relay);
+const add = (cls, body, relay = false, from = '') => {
+  const group = cls === 'user' || relay || !currentGroup ? startTurnGroup(relay, from) : currentGroup;
   const d = document.createElement('div'); d.className = 'msg ' + cls; d.dir = 'auto'; d.textContent = body;
-  currentGroup.appendChild(d);
-  currentGroup.querySelector(cls === 'user' ? '.prev-user' : '.prev-agent').textContent = cls === 'user' ? previewLine(body) : ' — ' + previewLine(body);
+  group.appendChild(d);
+  group.querySelector(cls === 'user' ? '.prev-user' : '.prev-agent').textContent = cls === 'user' ? previewLine(body) : ' — ' + previewLine(body);
   logEl.scrollTop = logEl.scrollHeight;
   return d;
 };
 // The only place a reply's text gets rendered, live or caught up — don't split this per path.
 // Always the raw/full text, not the cleaned-for-the-ear version.
-const renderTurnText = (full, turnId = '') => { if (!reply.childElementCount) addPiece(full); add('agent', full, turnId.startsWith('relay-')); };
+const renderTurnText = (full, turnId = '', from = '') => { if (!reply.childElementCount) addPiece(full); add('agent', full, turnId.startsWith('relay-'), from); };
 const showHeard = (text) => { hint.style.display = 'none'; heard.textContent = text; heard.classList.remove('hidden', 'open'); reply.textContent = ''; reply.style.display = 'none'; exchange.scrollTop = 0; };
 heard.onclick = () => heard.classList.toggle('open');
 // each sentence of the reply is a span; the one being spoken is lit and kept in view
@@ -214,8 +222,9 @@ const keepAwake = async () => { try { wakeLock = await navigator.wakeLock?.reque
 // dropped while hidden) and polls for anything missed while backgrounded. pollEvents is defined
 // further down, but this only ever runs after load, so the hoisted declaration is in place.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  if (on) { keepAwake(); checkMic(); }
+  if (document.visibilityState !== 'visible') { if (on) yieldMic(); return; }
+  // Coming back is a choice, so auto mode takes the mic back; checkMic falls back to a tap if it's still taken.
+  if (on) { keepAwake(); if (yielded && voiceMode === 'auto') yielded = false; checkMic(); }
   pollEvents();
 });
 
@@ -257,13 +266,15 @@ async function startEar() {
     },
   });
   await vad.start();
+  watchMic();
 }
 const earOff = () => { try { vad?.pause(); } catch {} orb.style.setProperty('--level', '1'); };
 const earOn = () => {
   if (!on) return;
   if (muted) { setMode('off', 'Muted'); return; }   // a turn that ends while muted lands back on Muted, not on a stale "Speaking"
+  if (yielded) { setMode('off', YIELDED_LABEL); return; }   // the mic went to another app: wait for a tap
   if (micStale) return checkMic();   // the phone was backgrounded during this turn
-  try { vad?.start(); } catch {}
+  try { vad?.start()?.then(watchMic, () => {}); } catch {}
   setMode('listening', listeningLabel());
 };
 // Backgrounding on iPhone breaks the mic: the track gets muted or ended, and the AudioContext,
@@ -286,8 +297,31 @@ async function repairMic() {
   if (audioCtx.state !== 'running') throw new Error('audio context ' + audioCtx.state);
   if (!(await framesArrive())) throw new Error('no audio frames');
 }
+// ---- the mic track reports when another app (a call, another recorder) takes the mic. Bound to
+// each new track, since pausing the ear stops the track and resuming opens a new one.
+function watchMic() {
+  const t = vad?._stream?.getAudioTracks?.()[0];
+  if (!t || t.watched) return;
+  t.watched = true;
+  const lost = () => { if (on && !busy) yieldMic(); };
+  t.addEventListener('ended', lost);
+  t.addEventListener('mute', lost);
+}
+// Sends what was being said, stops listening, and leaves the mic alone while the page is away (see
+// the visibilitychange listener for when it comes back).
+// Pausing the ear hands an utterance in progress to onSpeechEnd (submitUserSpeechOnPause), which
+// sends it; in manual mode the dictation buffer is sent. During a reply nothing is sent (onSpeechEnd
+// ignores it while busy), but the mic is still stopped: it can be open then, e.g. Start tapped while
+// a caught-up reply plays. It stays off when the reply ends.
+function yieldMic() {
+  if (yielded) return;
+  yielded = true;
+  if (!busy && voiceMode === 'manual') flushDictate();
+  earOff();
+  if (!busy) setMode('off', YIELDED_LABEL);
+}
 async function checkMic() {
-  if (!on || !vad) return;
+  if (!on || !vad || yielded) return;
   if (busy || muted) { micStale = true; return; }
   micStale = false;
   setMode('thinking', 'Opening the microphone');
@@ -349,7 +383,7 @@ async function turn(init) {
         if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }
         if (ev.type === 'status') setMode(ev.startup ? 'startup' : 'thinking', (ev.startup ? 'Starting up: ' : '') + ev.text.charAt(0).toUpperCase() + ev.text.slice(1));
         if (ev.type === 'text') renderTurnText(ev.full || ev.text);
-        if (ev.type === 'audio') { queue.push({ url: ev.url, span: addPiece(ev.text) }); playNext(mine); }
+        if (ev.type === 'audio') { enqueue({ id: ev.id, url: ev.url, span: addPiece(ev.text) }); playNext(mine); }
         if (ev.type === 'error') { setMode('error', ev.text); }
       }
     }
@@ -367,6 +401,9 @@ async function turn(init) {
 // Some browsers reset the rate when a new src loads, so it is re-applied per piece and on metadata.
 const applyRate = () => { try { player.preservesPitch = player.mozPreservesPitch = player.webkitPreservesPitch = true; player.playbackRate = speechRate; } catch {} };
 for (const ev of ['loadedmetadata', 'canplay', 'play', 'playing']) player.addEventListener(ev, applyRate);   // iOS drops the rate at a few of these points
+// One queue for every reply, ordered by when the server produced each sentence (its event id), so a
+// reply that had to wait still plays ahead of anything produced after it.
+const enqueue = (piece) => { const i = queue.findIndex((q) => q.id > piece.id); if (i < 0) queue.push(piece); else queue.splice(i, 0, piece); };
 // sentence audio plays in order as it arrives; the mic stays off until the last piece ends
 function playNext(mine) {
   if (playing || !queue.length || mine !== currentTurn) return;
@@ -386,7 +423,7 @@ function interrupt() { if (!busy) return; currentTurn++; queue = []; player.paus
 async function orbTap() {
   if (busy) return interrupt();
   if (!on) return;
-  if (micDead) { setMode('thinking', 'Opening the microphone'); try { await repairMic(); micDead = false; } catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); return; } return earOn(); }
+  if (micDead || yielded) { setMode('thinking', 'Opening the microphone'); try { await repairMic(); micDead = yielded = false; } catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); return; } return earOn(); }
   if (voiceMode === 'manual') return toggleDictate();
   try { if (audioCtx && audioCtx.state !== 'running') await audioCtx.resume(); } catch {}
   try { await vad?.start(); } catch {}
@@ -413,10 +450,10 @@ async function start() {
     if (!(await framesArrive())) { clientLog('start silent: ' + micState()); await repairMic(); }
   }
   catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); hint.textContent = 'Allow the microphone for this page, then tap Start again.'; big.disabled = false; return; }
-  on = true; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
+  on = true; yielded = false; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
   setMode('listening', listeningLabel()); touch();
 }
-function end() { clearTimeout(idleTimer); on = false; micDead = micStale = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
+function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
@@ -525,18 +562,25 @@ try {
 } catch {}
 const saveEventsState = () => { try { localStorage.setItem('eventsState', JSON.stringify({ cursor: eventsCursor, bootId: eventsBootId })); } catch {} };
 const catchUpAudioByTurn = {};
-// Plays a caught-up turn's sentences in order through the same player/queue/currentTurn
-// mechanism turn() uses: waits its turn behind anything already speaking, then takes the mic
-// offline exactly like a live reply does before putting audio on the shared <audio> element.
-async function playCatchUpAudio(turnId) {
+// Plays a caught-up turn's sentences through the same player/queue/currentTurn mechanism turn()
+// uses, in the order the server produced them. It never cuts off what you're saying: it waits until
+// the utterance is sent or dropped (auto: the VAD has speech open; manual: a dictation is being
+// recorded). If a turn is running by then, it joins that turn's queue ahead of anything produced
+// later; otherwise it takes the mic offline exactly like a live reply does.
+async function playCatchUpAudio(turnId, full, from) {
   const pieces = (catchUpAudioByTurn[turnId] || []).filter(Boolean);
   delete catchUpAudioByTurn[turnId];
-  if (!pieces.length) return;
-  while (busy) await sleep(300);   // never fight a live turn for the mic/queue
-  busy = true; earOff(); unlock();
-  const mine = ++currentTurn;
-  queue = []; nowSpan = null;
-  for (const p of pieces) { queue.push({ url: p.url, span: addPiece(p.text) }); playNext(mine); }
+  if (!pieces.length) { renderTurnText(full, turnId, from); fetchStats(); return; }
+  while (speechOpen || (voiceMode === 'manual' && dictating)) await sleep(300);
+  const joining = busy;
+  if (!joining) { busy = true; earOff(); unlock(); ++currentTurn; queue = []; nowSpan = null; reply.textContent = ''; }
+  const mine = currentTurn;
+  // The same order as a live turn: the sentences on screen as they're queued, then renderTurnText
+  // adds the conversation entry (and shows no text of its own, since the sentences are there).
+  for (const p of pieces) { enqueue({ id: p.id, url: p.url, span: addPiece(p.text) }); playNext(mine); }
+  renderTurnText(full, turnId, from);
+  fetchStats();
+  if (joining) return;   // the running turn waits for the whole queue before it gives the mic back
   await whilePlaying();
   if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); }
 }
@@ -545,11 +589,9 @@ const handleCaughtUpEvent = async (ev) => {
     add('user', ev.text);
     if (!busy) showHeard(ev.text);   // don't clobber a live reply that's rendering right now
   } else if (ev.type === 'audio') {
-    (catchUpAudioByTurn[ev.turnId] ||= [])[ev.index] = { url: ev.url, text: ev.text };
+    (catchUpAudioByTurn[ev.turnId] ||= [])[ev.index] = { id: ev.id, url: ev.url, text: ev.text };
   } else if (ev.type === 'text') {
-    renderTurnText(ev.full || ev.text, ev.turnId);
-    fetchStats();
-    await playCatchUpAudio(ev.turnId);
+    await playCatchUpAudio(ev.turnId, ev.full || ev.text, ev.from);
   }
   // other event types (status/done/error/ignored) carry nothing worth catching up on
 };
@@ -565,17 +607,12 @@ const fetchAndApplyEvents = async () => {
     eventsCursor = 0; eventsBootId = data.bootId; saveEventsState();
     return fetchAndApplyEvents();
   }
-  // One localStorage write for the whole batch, not one per event — and none at all when the
-  // log had nothing new. The save is in a finally so a throw mid-batch still persists how far
-  // we actually got.
-  const before = eventsCursor;
-  try {
-    for (const ev of data.events || []) {
-      if (ev.id > eventsCursor) eventsCursor = ev.id;
-      await handleCaughtUpEvent(ev);
-    }
-  } finally {
-    if (eventsCursor !== before) saveEventsState();
+  // Saved per event, before it is handled: a caught-up reply can wait a long time to play (behind a
+  // turn, while you're talking, or for a tap), and a reload during that wait must not show and
+  // play it a second time.
+  for (const ev of data.events || []) {
+    if (ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); }
+    await handleCaughtUpEvent(ev);
   }
 };
 async function pollEvents() {
