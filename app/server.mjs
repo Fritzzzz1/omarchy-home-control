@@ -63,8 +63,8 @@ const PERMISSION_SETTINGS = JSON.stringify({
 
 fs.mkdirSync(AUDIO_DIR, { recursive: true });
 
-// what stays awake between conversations, and for how long
-const IDLE = { ttsWarmMs: 5 * 60 * 1000, claudeMs: 30 * 60 * 1000, whisperMs: 2 * 60 * 60 * 1000 };
+// what stays awake between conversations, and for how long (the agent itself always stays up; see spawnClaude)
+const IDLE = { ttsWarmMs: 5 * 60 * 1000, whisperMs: 2 * 60 * 60 * 1000 };
 let lastTurnAt = 0;
 
 // ---------- small helpers ----------
@@ -170,12 +170,20 @@ const saveClaudeSession = (s) => writeJson(CLAUDE_SESSION_FILE, s);
 
 const childEnv = () => { const e = { ...process.env }; delete e.CLAUDECODE; delete e.CLAUDE_CODE_ENTRYPOINT; return e; };
 
-// One long-lived `claude` process per conversation: turns go in as stream-json user messages on stdin,
-// so a turn skips process start-up and session loading; it is respawned (resuming the session) if it exits.
+// One long-lived `claude` process: turns go in as stream-json user messages on stdin, so a turn
+// skips process start-up and session loading. It runs all the time, from server start, not only
+// while someone is talking: other Claude Code sessions on this machine reach the agent by messaging
+// that process, and with no process there is nobody to message. If it exits it is started again
+// (resuming the session) after a wait that doubles while it keeps dying, so a broken login or CLI
+// can't spin.
 let claudeProc = null;
 let turnHandler = null;
+let turnProc = null;   // the process the phone turn in flight was written to
 const TURN_TIMEOUT_MS = 15 * 60 * 1000;
-const claudeArgs = (session) => {
+const RESPAWN = { minMs: 2000, maxMs: 5 * 60 * 1000, stableMs: 60 * 1000 };
+let respawnDelay = RESPAWN.minMs;
+let respawnTimer = null;
+const claudeArgs = (session, newId) => {
   const args = [
     '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
     '--append-system-prompt-file', path.join(HERE, 'voice-mode.md'),
@@ -186,12 +194,14 @@ const claudeArgs = (session) => {
   if (MODEL) args.push('--model', MODEL);
   if (EFFORT) args.push('--effort', EFFORT);
   if (session.id) args.push('--resume', session.id);
-  else args.push('--session-id', crypto.randomUUID());
+  else args.push('--session-id', newId);
   return args;
 };
 const spawnClaude = () => {
   const session = claudeSession();
-  const child = spawn('claude', claudeArgs(session), { cwd: ROOT, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn('claude', claudeArgs(session, crypto.randomUUID()), { cwd: ROOT, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const startedAt = Date.now();
+  let costSeen = 0;   // the CLI reports cost as a running total for its own process
   let buf = '';
   let stderr = '';
   child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-2000); });
@@ -203,11 +213,22 @@ const spawnClaude = () => {
       if (!line.trim()) continue;
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
-      if (turnHandler) { turnHandler(ev); continue; }
+      // Every reply counts toward the session's cost, whoever asked for it. A process already
+      // stopped (a reset) may still finish a reply; that one belongs to the old conversation.
+      if (ev.type === 'result' && child === claudeProc) {
+        const s = claudeSession();
+        const cost = Number(ev.total_cost_usd) || 0;
+        // A brand-new session is only saved once it has a reply; an agent that was never spoken
+        // to has nothing on disk to resume.
+        saveClaudeSession({ ...s, id: s.id || ev.session_id || null, costUsd: (s.costUsd || 0) + Math.max(0, cost - costSeen) });
+        costSeen = cost;
+      }
+      if (turnHandler && child === turnProc) { turnHandler(ev); continue; }
       // No turn is waiting (another session woke the agent): speak its reply anyway instead of
       // dropping it (never silently lost — the room hears it even if nobody's phone is around),
       // and log the same rendered events under a relay turn id so a polling phone picks them up.
       if (ev.type === 'result' && !ev.is_error && ev.result) {
+        lastTurnAt = Date.now();
         const relayTurnId = `relay-${crypto.randomBytes(6).toString('hex')}`;
         (async () => {
           const spoken = stripMarkdown(ev.result);
@@ -224,23 +245,40 @@ const spawnClaude = () => {
   });
   child.on('exit', (code) => {
     log(`claude process exited ${code}${stderr ? ': ' + stderr.trim().split('\n').pop().slice(0, 160) : ''}`);
-    if (claudeProc === child) claudeProc = null;
-    turnHandler?.({ type: 'process_exit', code, stderr });
+    if (turnProc === child) turnHandler?.({ type: 'process_exit', code, stderr });
+    if (claudeProc !== child) return;   // stopped on purpose: stopClaude starts the next one
+    claudeProc = null;
+    if (Date.now() - startedAt > RESPAWN.stableMs) respawnDelay = RESPAWN.minMs;
+    log(`agent process restarting in ${Math.round(respawnDelay / 1000)}s`);
+    clearTimeout(respawnTimer);
+    respawnTimer = setTimeout(ensureClaude, respawnDelay);
+    respawnDelay = Math.min(respawnDelay * 2, RESPAWN.maxMs);
   });
   log(`agent process started (${session.id ? 'resuming ' + session.id : 'new session'})`);
   return child;
 };
-const stopClaude = () => { const p = claudeProc; claudeProc = null; if (p) { try { p.stdin.end(); } catch {} setTimeout(() => { try { p.kill(); } catch {} }, 2000); } };
+const ensureClaude = () => { clearTimeout(respawnTimer); respawnTimer = null; if (!claudeProc) claudeProc = spawnClaude(); };
+// Ends the running process (a reset, or a turn that hung) and starts a fresh one once it is gone,
+// so the agent is reachable again straight away and two processes never share the session.
+const stopClaude = () => {
+  const p = claudeProc;
+  claudeProc = null;
+  if (!p) return ensureClaude();
+  const kill = setTimeout(() => { try { p.kill(); } catch {} }, 2000);
+  p.once('exit', () => { clearTimeout(kill); ensureClaude(); });
+  try { p.stdin.end(); } catch {}
+};
 process.on('exit', () => claudeProc?.kill());
 
 // Runs one turn; calls onEvent for status while it runs; resolves {text, sessionId, cost}.
 const runTurn = (text, onEvent) => new Promise((resolve, reject) => {
-  if (!claudeProc) { onEvent({ type: 'status', text: claudeSession().id ? 'waking the agent, resuming our conversation' : 'waking the agent, first read of the folder', startup: true }); claudeProc = spawnClaude(); }
+  if (!claudeProc) { onEvent({ type: 'status', text: claudeSession().id ? 'waking the agent, resuming our conversation' : 'waking the agent, first read of the folder', startup: true }); ensureClaude(); }
+  turnProc = claudeProc;
   const session = claudeSession();
   let sessionId = session.id;
   let lastText = '';
-  const timer = setTimeout(() => { turnHandler = null; stopClaude(); reject(new Error('the agent took too long; the process was restarted')); }, TURN_TIMEOUT_MS);
-  const finish = (fn) => { clearTimeout(timer); turnHandler = null; fn(); };
+  const timer = setTimeout(() => { turnHandler = null; turnProc = null; stopClaude(); reject(new Error('the agent took too long; the process was restarted')); }, TURN_TIMEOUT_MS);
+  const finish = (fn) => { clearTimeout(timer); turnHandler = null; turnProc = null; fn(); };
   turnHandler = (ev) => {
     if (ev.type === 'process_exit') return finish(() => reject(new Error(ev.stderr?.trim().split('\n').pop()?.slice(0, 160) || `claude exited ${ev.code}`)));
     if (ev.session_id) sessionId = ev.session_id;
@@ -255,7 +293,7 @@ const runTurn = (text, onEvent) => new Promise((resolve, reject) => {
     }
     if (ev.type === 'result') {
       if (ev.is_error) return finish(() => reject(new Error(ev.result || 'the agent returned an error')));
-      saveClaudeSession({ id: sessionId, turns: (session.id === sessionId ? session.turns : 0) + 1, at: new Date().toISOString() });
+      saveClaudeSession({ ...claudeSession(), id: sessionId, turns: (session.id === sessionId ? session.turns : 0) + 1, at: new Date().toISOString() });
       finish(() => resolve({ text: ev.result || lastText || '', sessionId, cost: ev.total_cost_usd }));
     }
   };
@@ -364,7 +402,6 @@ setInterval(() => { if (Date.now() - lastTurnAt < IDLE.ttsWarmMs) { warmTts('en'
 setInterval(() => {
   if (busy || !lastTurnAt) return;
   const idle = Date.now() - lastTurnAt;
-  if (claudeProc && idle > IDLE.claudeMs) { log(`idle ${Math.round(idle / 60000)} min: claude process released (session kept, resumes on the next turn)`); stopClaude(); }
   if (whisper && idle > IDLE.whisperMs) { log(`idle ${Math.round(idle / 60000)} min: whisper unloaded (reloads on the next turn)`); whisper.kill(); }
 }, 60000);
 // Plays each turn's audio on this machine's own output, in addition to sending it to the
@@ -638,8 +675,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/reset' && req.method === 'POST') {
       const old = claudeSession();
-      stopClaude();
+      // Clear the session first: stopClaude starts the next process, and it must not resume this one.
       saveClaudeSession({ id: null, turns: 0, previous: old.id });
+      stopClaude();
       // New conversation means new conversation: the drawer's file is cleared, and so is the
       // event log — otherwise old content stays reachable via /api/events (a catching-up phone
       // would render it into the fresh conversation) even after the reset button was pressed.
@@ -649,6 +687,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, away: isAway() }); }
+    if (url.pathname === '/api/session-stats') return json(res, 200, sessionStats());
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
       return json(res, 200, lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));
@@ -678,9 +717,41 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// The conversation panel's three numbers. Turns and tokens come from the session's own file, so
+// they include turns another session started, not only the phone's. The CLI writes one line per
+// content block of a response, each carrying that response's usage, so usage counts once per
+// message id. Cost is the CLI's own figure, added up as replies arrive (see spawnClaude).
+// Claude Code names a project's folder after its working directory, every other character a "-".
+const CLAUDE_PROJECT_DIR = path.join(os.homedir(), '.claude', 'projects', ROOT.replace(/[^A-Za-z0-9]/g, '-'));
+const sessionStats = () => {
+  const session = claudeSession();
+  const stats = { turns: 0, tokens: 0, costUsd: session.costUsd || 0 };
+  if (!session.id) return stats;
+  let lines;
+  try { lines = fs.readFileSync(path.join(CLAUDE_PROJECT_DIR, `${session.id}.jsonl`), 'utf8').split('\n'); } catch { return stats; }
+  const counted = new Set();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let ev;
+    try { ev = JSON.parse(line); } catch { continue; }
+    // A turn is a prompt: the phone's words or another session's message. Tool results and
+    // injected meta text (a loaded skill) ride along inside a turn.
+    if (ev.type === 'user' && !ev.isCompactSummary && (!ev.isMeta || ev.origin?.kind === 'peer')) {
+      const c = ev.message?.content;
+      if (typeof c === 'string' || (Array.isArray(c) && c.some((b) => b.type !== 'tool_result'))) stats.turns += 1;
+    }
+    const u = ev.type === 'assistant' && ev.message?.usage;
+    if (!u || counted.has(ev.message.id)) continue;
+    counted.add(ev.message.id);
+    stats.tokens += (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+  }
+  return stats;
+};
+
 server.listen(PORT, HOST, () => {
   passphrase();
   startWhisper();
   startTts();
+  ensureClaude();
   log(`voice server on http://${HOST}:${PORT} root=${ROOT}`);
 });

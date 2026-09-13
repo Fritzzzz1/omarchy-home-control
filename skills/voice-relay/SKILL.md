@@ -11,13 +11,14 @@ your replies back to them.
 
 ## Find the voice agent
 
-Its session name changes every time it starts. It is the `claude` process the `home-control`
-service runs, and its address is:
+Its session name changes every time it starts. It is the long-lived `claude` process the
+`home-control` service runs (the only one reading stream-json on stdin — a second, short-lived
+`claude` under the service rewords long replies and is not it), and its address is:
 
-    echo "uds:$XDG_RUNTIME_DIR/cc-socks/$(pgrep -P "$(systemctl --user show -p MainPID --value home-control)" -x claude).sock"
+    echo "uds:$XDG_RUNTIME_DIR/cc-socks/$(pgrep -P "$(systemctl --user show -p MainPID --value home-control)" -f -- '--input-format stream-json').sock"
 
-If no PID comes out, it is not running — it starts when the user next speaks from the phone.
-Ask them to say something to it, then look again.
+It runs all the time the service does. If no PID comes out, it is between restarts: wait a few
+seconds and look again. If it stays empty, the service is down — tell the user.
 
 ## Start
 
