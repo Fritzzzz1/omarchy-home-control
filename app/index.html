@@ -477,13 +477,13 @@ function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yield
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
-// The first time a tap mutes on this device, a tip points out the button's other gesture for a few
-// seconds. Once seen, never again (remembered per device).
+// The first time a tap mutes in each app session, a tip points out the button's other gesture for a
+// few seconds (sessionStorage: a reload keeps it seen, opening the app again shows it once more).
 const tip = $('tip');
 let tipTimer = null;
 const hideTip = () => { clearTimeout(tipTimer); tip.classList.remove('show'); };
 const showTip = () => {
-  try { if (localStorage.getItem('muteTipShown')) return; localStorage.setItem('muteTipShown', '1'); } catch {}
+  try { if (sessionStorage.getItem('muteTipShown')) return; sessionStorage.setItem('muteTipShown', '1'); } catch {}
   const row = $('row');   // just under the row, the pointer on the mic button's middle
   tip.style.left = row.offsetLeft + 'px'; tip.style.top = (row.offsetTop + row.offsetHeight + 6) + 'px';
   tip.style.setProperty('--caret', (mute.offsetLeft - row.offsetLeft + mute.offsetWidth / 2 - 4) + 'px');
