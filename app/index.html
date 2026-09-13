@@ -265,7 +265,7 @@ async function startEar() {
     // In manual mode, nothing reacts to sound until the orb is tapped to start dictating — an
     // untapped orb that still says "Hearing you" and pulses looks like it's capturing when it
     // isn't, and a real utterance can be lost before anyone notices.
-    onSpeechStart: () => { if (busy || muted) return; speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
+    onSpeechStart: () => { if (busy || muted) { clientLog(`speech started while ${busy ? 'busy' : 'muted'}, not marked open`); return; } speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
     onFrameProcessed: (p, frame) => {
       frames++;
       if (busy || muted) return;
@@ -495,6 +495,9 @@ const toggleMute = () => {
   if (muted) showTip(); else hideTip();
   if (muted) {
     clientLog(`mute tapped: speechOpen=${speechOpen} speaking=${vad?.frameProcessor?.speaking} speechFrames=${vad?.frameProcessor?.speechFrameCount} dictating=${dictating}`);
+    // Whatever the VAD is hearing at the tap began before the mute, so it goes up even if the page
+    // never marked it open (speech that started while busy or muted is never marked).
+    if (vad?.frameProcessor?.speaking) speechOpen = true;
     const sent = flushDictate(); earOff(); if (!sent && !busy) setMode('off', 'Muted');
   } else earOn();
 };
