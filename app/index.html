@@ -282,6 +282,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { if (on) yieldMic(); return; }
   // Coming back is a choice, so auto mode takes the mic back; checkMic falls back to a tap if it's still taken.
   if (on) { keepAwake(); if (yielded && voiceMode === 'auto') yielded = false; checkMic(); }
+  if (live?.readyState === 2) openLive();   // failed for good while hidden; see openLive
   pollEvents();
 });
 
@@ -462,9 +463,6 @@ async function turn(init) {
         if (ev.type === 'text') renderTurnText(ev.full || ev.text);
         if (ev.type === 'audio') { enqueue({ id: ev.id, url: ev.url, span: addPiece(ev.text) }); playNext(mine); }
         if (ev.type === 'error') { setMode('error', ev.text); }
-        if (ev.type === 'confirm') { showConfirm(ev); setMode('thinking', 'Waiting for your answer'); }
-        if (ev.type === 'confirm_done') { hideConfirm(ev.id); if (!playing) setMode('thinking', 'Thinking'); }
-        if (ev.type === 'cue') { queue.push({ url: ev.url, span: null }); playNext(mine); }
       }
     }
   } catch (e) { setMode('error', e.name === 'AbortError' ? 'The answer went quiet; listening again' : e.message); }
@@ -472,7 +470,6 @@ async function turn(init) {
     clearTimeout(quiet);
     liveStreams--; pollEvents();   // catches the cursor up now, so a reload right after doesn't show this turn again
     if (mine === currentTurn) {
-      hideConfirm();
       await whilePlaying();
       busy = false;
       if (on) earOn(); else setMode('off', STOPPED_LABEL);
@@ -551,9 +548,9 @@ $('pause').onclick = () => {
   if (paused) { player.pause(); modeText.textContent = 'Paused'; } else { player.play(); modeText.textContent = 'Speaking'; }
 };
 
-// ---- confirm card: a tool call waiting for Allow/Deny. It arrives on the live turn's stream only;
-// the server denies by itself on timeout or when this page's stream goes away. The countdown here
-// only closes the card; the server's own timer is the one that answers.
+// ---- confirm card: a tool call waiting for Allow/Deny, one at a time. Cards come on the page's
+// live stream (/api/live), whoever started the turn; the server denies by itself on timeout or when
+// no page is left. The countdown here only closes the card; the server's own timer answers.
 let confirmId = null, confirmTick = null;
 const hideConfirm = (id) => { if (id && id !== confirmId) return; confirmId = null; clearInterval(confirmTick); $('confirmCard').hidden = true; };
 const showConfirm = (ev) => {
@@ -574,6 +571,28 @@ const answerConfirm = async (decision) => {
 };
 $('confirmAllow').onclick = () => answerConfirm('allow');
 $('confirmDeny').onclick = () => answerConfirm('deny');
+// The cue plays like a reply sentence: queued behind this page's running turn, or, when no turn of
+// this page is running (another session started it), with the mic taken offline the same way a
+// caught-up reply is played, so the mic never hears it.
+async function playCue(url) {
+  if (busy) { queue.push({ url, span: null }); playNext(currentTurn); return; }
+  busy = true; earOff(); unlock();
+  const mine = ++currentTurn;
+  queue = [{ url, span: null }]; nowSpan = null; playNext(mine);
+  await whilePlaying();
+  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); }
+}
+// The live stream stays open as long as the page. EventSource reconnects by itself after a drop;
+// one that failed for good (a 401, say) is reopened when the page is shown again.
+let live = null;
+const handleLive = (ev) => {
+  if (ev.type === 'confirm_sync') { if (ev.confirm) showConfirm(ev.confirm); else hideConfirm(); }
+  if (ev.type === 'confirm') { showConfirm(ev); if (busy && !playing) setMode('thinking', 'Waiting for your answer'); }
+  if (ev.type === 'confirm_done') { hideConfirm(ev.id); if (busy && !playing) setMode('thinking', 'Thinking'); }
+  if (ev.type === 'cue' && ev.id === confirmId) playCue(ev.url);
+};
+const openLive = () => { live = new EventSource('/api/live'); live.onmessage = (m) => { try { handleLive(JSON.parse(m.data)); } catch {} }; };
+openLive();
 
 // ---- the call button and the mic
 const setBigIcon = (stopping) => { $('bigPlayIcon').style.display = stopping ? 'none' : ''; $('bigStopIcon').style.display = stopping ? '' : 'none'; big.setAttribute('aria-label', stopping ? 'End conversation' : 'Start conversation'); };

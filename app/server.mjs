@@ -49,10 +49,10 @@ const parseOnOff = (raw, unset = true) => {
   return unset;
 };
 const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
-// What runs without asking: read-only tools and commands only. Everything else (file edits,
-// other shell commands, SendMessage) goes to the confirm button: claude's PermissionRequest hook
-// posts to /api/permission (below), the phone shows Allow/Deny, and the answer goes back to
-// claude. Secrets stay denied outright (PERMISSION_SETTINGS).
+// What runs without asking: read-only tools and commands, plus peer messaging when delegation is
+// on (below). Everything else (file edits, other shell commands) goes to the confirm button:
+// claude's PermissionRequest hook posts to /api/permission (below), the phone shows Allow/Deny,
+// and the answer goes back to claude. Secrets stay denied outright (PERMISSION_SETTINGS_FILE).
 const READ_ONLY_BASH = [
   'git status', 'git log', 'git diff', 'git show', 'git fetch',
   'date', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'ffprobe',
@@ -67,28 +67,39 @@ const ALLOWED_TOOLS = [
   ...READ_ONLY_BASH.map((c) => `Bash(${c}:*)`), 'Bash(sudo -n -l)',
 ];
 // Handing work to another live Claude Code session on this machine. Opt-in (install.sh), because
-// it widens who can act on a spoken request. Listing peers only reads; each SendMessage asks the
-// phone. With delegation off, both tools are removed outright. Rule text: delegation.on.md.
+// it widens who can act on a spoken request. With it on, both tools run without a tap (relay mode
+// sends one message per utterance); the receiving session's own permissions still guard what it
+// does. With it off, both are removed outright. Rule text: delegation.on.md.
 const PEER_DELEGATION = (process.env.VOICE_PEER_DELEGATION || '').toLowerCase() === 'on';
-if (PEER_DELEGATION) ALLOWED_TOOLS.push('ListAgents');
+if (PEER_DELEGATION) ALLOWED_TOOLS.push('ListAgents', 'SendMessage');
 const DISALLOWED_TOOLS = PEER_DELEGATION ? [] : ['ListAgents', 'SendMessage'];
-// The hook URL carries a per-process secret: only the claude child, which gets it through
-// --settings, can post a permission request (see handlePermission). The hook's own timeout is
-// longer than the phone's, so the server always answers first.
+// The hook URL carries a per-process secret that only the claude child learns: the settings go in a
+// 0600 file in the state dir (not argv, which any local user can read in /proc), rewritten at each
+// spawn and removed on exit. The hook's own timeout covers a full queue of cards, so the server
+// always answers first.
 const HOOK_TOKEN = crypto.randomBytes(18).toString('hex');
 const CONFIRM_TIMEOUT_MS = 120 * 1000;
-const PERMISSION_SETTINGS = JSON.stringify({
-  permissions: {
-    deny: [
-      'Read(./**/secrets/**)', 'Read(./**/credentials*)', 'Read(./**/.env*)',
-      'Edit(./**/secrets/**)', 'Edit(./**/credentials*)', 'Edit(./**/.env*)',
-      'Write(./**/secrets/**)', 'Write(./**/credentials*)', 'Write(./**/.env*)',
-    ],
-  },
-  hooks: {
-    PermissionRequest: [{ matcher: '*', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/permission?t=${HOOK_TOKEN}`, timeout: CONFIRM_TIMEOUT_MS / 1000 + 30 }] }],
-  },
-});
+const CONFIRM_QUEUE_MAX = 5;
+const PERMISSION_SETTINGS_FILE = path.join(STATE, 'claude-settings.json');
+const writePermissionSettings = () => {
+  const settings = {
+    permissions: {
+      deny: [
+        'Read(./**/secrets/**)', 'Read(./**/credentials*)', 'Read(./**/.env*)',
+        'Edit(./**/secrets/**)', 'Edit(./**/credentials*)', 'Edit(./**/.env*)',
+        'Write(./**/secrets/**)', 'Write(./**/credentials*)', 'Write(./**/.env*)',
+      ],
+    },
+    hooks: {
+      PermissionRequest: [{ matcher: '*', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/permission?t=${HOOK_TOKEN}`, timeout: (CONFIRM_TIMEOUT_MS / 1000) * (CONFIRM_QUEUE_MAX + 1) + 60 }] }],
+    },
+  };
+  fs.mkdirSync(STATE, { recursive: true });
+  fs.rmSync(PERMISSION_SETTINGS_FILE, { force: true });   // created fresh, so the 0600 below always applies
+  fs.writeFileSync(PERMISSION_SETTINGS_FILE, JSON.stringify(settings), { mode: 0o600 });
+};
+writePermissionSettings();
+process.on('exit', () => { try { fs.rmSync(PERMISSION_SETTINGS_FILE, { force: true }); } catch {} });
 
 fs.mkdirSync(AUDIO_DIR, { recursive: true });
 
@@ -218,13 +229,13 @@ const claudeArgs = (session, newId) => {
     '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
     '--append-system-prompt-file', path.join(HERE, 'voice-mode.md'),
     // Default mode: anything not allowlisted (file edits included) goes to the confirm button
-    // through the PermissionRequest hook in PERMISSION_SETTINGS. `--permission-prompts none` is
+    // through the PermissionRequest hook in PERMISSION_SETTINGS_FILE. `--permission-prompts none` is
     // required: with the default "host" target and no SDK host, `claude -p` denies without
     // running the hook at all (tested on 2.1.266).
     '--permission-mode', 'default', '--permission-prompts', 'none',
     '--allowedTools', ...ALLOWED_TOOLS,
     ...(DISALLOWED_TOOLS.length ? ['--disallowedTools', ...DISALLOWED_TOOLS] : []),
-    '--settings', PERMISSION_SETTINGS,
+    '--settings', PERMISSION_SETTINGS_FILE,
   ];
   if (MODEL) args.push('--model', MODEL);
   if (EFFORT) args.push('--effort', EFFORT);
@@ -234,6 +245,7 @@ const claudeArgs = (session, newId) => {
 };
 const spawnClaude = () => {
   const session = claudeSession();
+  writePermissionSettings();   // again, in case the state dir was cleaned while running
   const child = spawn('claude', claudeArgs(session, crypto.randomUUID()), { cwd: ROOT, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
   const startedAt = Date.now();
   let costSeen = 0;   // the CLI reports cost as a running total for its own process
@@ -689,12 +701,17 @@ const speakFallback = async (turnText, lang, send, onAudio) => {
 };
 
 // ---------- the confirm button ----------
-// claude's PermissionRequest hook posts here. The request is held open while the phone whose turn
-// is running shows Allow/Deny (an SSE `confirm` event on that turn's stream); the tap
-// (POST /api/confirm), the timeout, or that stream going away answers it. No answer is a deny.
-// Never answer with interrupt:true: it ends the whole claude process (tested).
-let liveClient = null;       // { send, lastText, closed }: the phone whose turn is running now
-let pendingConfirm = null;   // { id, res, client, tool, timer }: one at a time
+// claude's PermissionRequest hook posts here and the request is held open until answered. Every
+// open app page keeps a live stream (GET /api/live) and shows one card at a time, whoever started
+// the turn: the phone, or another session through relay. Requests wait in a FIFO queue; each gets
+// 120 s from when its card appears. A tap (POST /api/confirm) answers; the timeout, no page open,
+// the last page going away, or a reset deny. Never answer with interrupt:true: it ends the whole
+// claude process (tested).
+const pages = new Set();      // open live streams: { send }
+const confirmQueue = [];      // waiting for their card, oldest first: { id, res, tool, summary }
+let confirmCurrent = null;    // the one on screen, plus { timer, shownAt }
+let lastUserText = '';        // what the phone last said: picks the cue's language
+const NO_PAGE = "App not open — can't confirm";
 const permissionReply = (behavior, message) => ({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: behavior === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message } } });
 // Tailscale Serve proxies tailnet traffic from 127.0.0.1 and adds these headers, so a forwarded
 // request is never local, whatever the socket says.
@@ -708,15 +725,45 @@ const confirmSummary = (tool, i = {}) => oneLine(
     : tool === 'SendMessage' ? `to ${i.to}: ${typeof i.message === 'string' ? i.message : JSON.stringify(i.message)}`
     : i.url || i.description || JSON.stringify(i),
 );
+const broadcast = (ev) => { for (const p of pages) p.send(ev); };
+const confirmEvent = (c) => ({ type: 'confirm', id: c.id, tool: toolLabel(c.tool), summary: c.summary, timeoutMs: Math.max(0, c.shownAt + CONFIRM_TIMEOUT_MS - Date.now()) });
+const answerHook = (c, behavior, message, why) => {
+  if (!c.res.writableEnded && !c.res.destroyed) json(c.res, 200, permissionReply(behavior, message));
+  broadcast({ type: 'confirm_done', id: c.id, decision: behavior, reason: why });
+  log(`permission: ${behavior} ${c.tool} (${why})`);
+};
+const showNextConfirm = () => {
+  if (confirmCurrent) return;
+  const c = confirmQueue.shift();
+  if (!c) { turnClock?.resume(); return; }
+  confirmCurrent = c;
+  c.shownAt = Date.now();
+  c.timer = setTimeout(() => settleConfirm('deny', 'No answer in time', 'timeout'), CONFIRM_TIMEOUT_MS);
+  turnClock?.pause();
+  log(`permission: asking about ${c.tool}: ${c.summary.slice(0, 120)}`);
+  broadcast(confirmEvent(c));
+  // A short spoken cue in the language of what he last said: on the pages, and on this machine's
+  // speakers unless away.
+  const cue = /[Ѐ-ӿ]/.test(lastUserText) ? 'Нужно подтверждение на экране.' : 'Confirmation needed on screen.';
+  speak(cue).then((a) => {
+    if (confirmCurrent !== c) return;
+    playLocally(a.file);
+    broadcast({ type: 'cue', id: c.id, url: a.url, text: cue });
+  }).catch((e) => log(`permission cue failed: ${e.message}`));
+};
 const settleConfirm = (behavior, message, why) => {
-  const p = pendingConfirm;
-  if (!p) return;
-  pendingConfirm = null;
-  clearTimeout(p.timer);
+  const c = confirmCurrent;
+  if (!c) return;
+  confirmCurrent = null;
+  clearTimeout(c.timer);
+  answerHook(c, behavior, message, why);
+  showNextConfirm();
+};
+const denyAllConfirms = (message, why) => {
+  const all = confirmQueue.splice(0);
+  if (confirmCurrent) { clearTimeout(confirmCurrent.timer); all.unshift(confirmCurrent); confirmCurrent = null; }
+  for (const c of all) answerHook(c, 'deny', message, why);
   turnClock?.resume();
-  if (!p.res.writableEnded && !p.res.destroyed) json(p.res, 200, permissionReply(behavior, message));
-  if (!p.client.closed) p.client.send({ type: 'confirm_done', id: p.id, decision: behavior, reason: why });
-  log(`permission: ${behavior} ${p.tool} (${why})`);
 };
 const handlePermission = async (req, res) => {
   const t = Buffer.from(new URL(req.url, 'http://x').searchParams.get('t') || '');
@@ -727,33 +774,44 @@ const handlePermission = async (req, res) => {
   }
   const body = readJsonBody((await readBody(req, 20e6)).toString('utf8'));
   const tool = String(body.tool_name || 'a tool');
-  const deny = (message, why) => { log(`permission: deny ${tool} (${why})`); json(res, 200, permissionReply('deny', message)); };
-  const client = liveClient;
-  if (!client || client.closed) return deny("App not open — can't confirm", 'no page open');
-  if (pendingConfirm) return deny('Another confirmation is already waiting', 'one at a time');
-  const id = crypto.randomBytes(6).toString('hex');
-  const summary = confirmSummary(tool, body.tool_input || {});
-  pendingConfirm = { id, res, client, tool, timer: setTimeout(() => settleConfirm('deny', 'No answer in time', 'timeout'), CONFIRM_TIMEOUT_MS) };
-  // claude gave up on the hook (its own timeout, or the process died): close the card.
-  res.on('close', () => { if (pendingConfirm?.id === id) settleConfirm('deny', '', 'hook closed'); });
-  turnClock?.pause();
-  log(`permission: asking about ${tool}: ${summary.slice(0, 120)}`);
-  client.send({ type: 'confirm', id, tool: toolLabel(tool), summary, timeoutMs: CONFIRM_TIMEOUT_MS });
-  // A short spoken cue in the language of what he last said, played like a sentence: queued on
-  // the phone and on this machine's speakers (unless away).
-  const cue = /[Ѐ-ӿ]/.test(client.lastText) ? 'Нужно подтверждение на экране.' : 'Confirmation needed on screen.';
-  speak(cue).then((a) => {
-    if (pendingConfirm?.id !== id) return;
-    playLocally(a.file);
-    if (!client.closed) client.send({ type: 'cue', url: a.url, text: cue });
-  }).catch((e) => log(`permission cue failed: ${e.message}`));
+  if (!pages.size) {
+    denyAllConfirms(NO_PAGE, 'no page open');
+    log(`permission: deny ${tool} (no page open)`);
+    return json(res, 200, permissionReply('deny', NO_PAGE));
+  }
+  if (confirmQueue.length + (confirmCurrent ? 1 : 0) >= CONFIRM_QUEUE_MAX) {
+    log(`permission: deny ${tool} (queue full)`);
+    return json(res, 200, permissionReply('deny', 'Too many confirmations waiting'));
+  }
+  const c = { id: crypto.randomBytes(6).toString('hex'), res, tool, summary: confirmSummary(tool, body.tool_input || {}) };
+  // claude gave up on this hook (its own timeout, or the process died): off the screen or the queue.
+  res.on('close', () => {
+    if (confirmCurrent === c) return settleConfirm('deny', '', 'hook closed');
+    const i = confirmQueue.indexOf(c);
+    if (i >= 0) { confirmQueue.splice(i, 1); log(`permission: ${tool} withdrawn (hook closed)`); }
+  });
+  confirmQueue.push(c);
+  showNextConfirm();
 };
 const handleConfirm = async (req, res) => {
   const b = await readJsonRequest(req);
-  if (!pendingConfirm || b.id !== pendingConfirm.id) return json(res, 409, { error: 'no such confirmation' });
+  if (!confirmCurrent || b.id !== confirmCurrent.id) return json(res, 409, { error: 'no such confirmation' });
   const allow = b.decision === 'allow';
   settleConfirm(allow ? 'allow' : 'deny', allow ? '' : 'Denied on the phone', allow ? 'tapped Allow' : 'tapped Deny');
   return json(res, 200, { ok: true });
+};
+// A page's live stream. It gets the card on screen right away (a page opened or reconnected
+// mid-wait), and the last one closing denies everything waiting.
+const openLive = (req, res) => {
+  const page = { send: sse(res) };
+  pages.add(page);
+  const ping = setInterval(() => res.write(': ping\n\n'), 20000);   // keeps proxies from idling it out
+  page.send({ type: 'confirm_sync', confirm: confirmCurrent ? confirmEvent(confirmCurrent) : null });
+  res.on('close', () => {
+    clearInterval(ping);
+    pages.delete(page);
+    if (!pages.size && (confirmCurrent || confirmQueue.length)) denyAllConfirms("App closed — can't confirm", 'no page left');
+  });
 };
 
 const handleTurn = async (req, res) => {
@@ -770,10 +828,6 @@ const handleTurn = async (req, res) => {
   // the client's poller knows a live-streamed event was already shown and doesn't render the turn
   // a second time.
   const send = (ev) => { const entry = logEvent(turnId, ev); sendRaw({ ...ev, id: entry.id }); };
-  // This phone can answer a confirm card while its turn runs; its stream closing denies one.
-  const client = { send, lastText: '', closed: false };
-  liveClient = client;
-  res.on('close', () => { client.closed = true; if (pendingConfirm?.client === client) settleConfirm('deny', "App closed — can't confirm", 'phone left'); });
   const started = Date.now();
   try {
     let text, lang;
@@ -791,7 +845,7 @@ const handleTurn = async (req, res) => {
       if (!text) { send({ type: 'error', text: 'empty' }); return; }
       lang = body.lang === 'he' ? 'he' : detectLang(text);
     }
-    client.lastText = text;
+    lastUserText = text;
     const first = !claudeSession().id;
     send({ type: 'status', text: first ? 'waking up' : 'thinking' });
     warmTts(lang);
@@ -815,8 +869,6 @@ const handleTurn = async (req, res) => {
     // would come on mid-playback and hear itself. Waiting for localQueue here — the same
     // chain playLocally() feeds — closes that gap; skipLocal() (via /api/skip) still cuts
     // it short on demand.
-    if (pendingConfirm?.client === client) settleConfirm('deny', 'Turn ended', 'turn ended');
-    if (liveClient === client) liveClient = null;
     try { await localQueue; } catch {}
     busy = false;
     res.end();
@@ -862,6 +914,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/') return html(res, 'index.html');
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
     if (url.pathname === '/api/confirm' && req.method === 'POST') return handleConfirm(req, res);
+    if (url.pathname === '/api/live' && req.method === 'GET') return openLive(req, res);
     if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/client-log' && req.method === 'POST') { const b = await readJsonRequest(req); log('phone: ' + String(b?.msg ?? '').slice(0, 400)); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
@@ -876,7 +929,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/reset' && req.method === 'POST') {
       const old = claudeSession();
-      settleConfirm('deny', 'Conversation reset', 'reset');
+      denyAllConfirms('Conversation reset', 'reset');
       // Clear the session first: stopClaude starts the next process, and it must not resume this one.
       saveClaudeSession({ id: null, turns: 0, previous: old.id });
       stopClaude();
