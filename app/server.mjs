@@ -53,18 +53,23 @@ const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // on (below). Everything else (file edits, other shell commands) goes to the confirm button:
 // claude's PermissionRequest hook posts to /api/permission (below), the phone shows Allow/Deny,
 // and the answer goes back to claude. Secrets stay denied outright (PERMISSION_SETTINGS_FILE).
+// Prefix rules (`cmd:*`) don't look at flags, so a command is listed only if none of its flags
+// writes a file, runs a program or leaks a secret. Removed for that reason: git fetch
+// (--upload-pack runs a program), git log/diff/show (--output writes), ffprobe (-o writes),
+// gh auth status (--show-token), gh pr * (--web launches a browser). They ask the phone instead.
 const READ_ONLY_BASH = [
-  'git status', 'git log', 'git diff', 'git show', 'git fetch',
-  'date', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'ffprobe',
-  'ps', 'top -b -n 1', 'top -bn1', 'free', 'which', 'uptime', 'df', 'du', 'ip -br', 'lspci', 'lsmod',
+  'git status',
+  'date', 'ls', 'cat', 'head', 'tail', 'wc', 'grep',
+  'ps', 'top -b -n 1', 'top -bn1', 'free', 'which', 'uptime', 'df', 'du', 'lspci', 'lsmod',
   'pacman -Q', 'pacman -Qq', 'pacman -Qqe', 'pacman -Qi',
   'systemctl status', 'systemctl --user status', 'systemctl is-active', 'systemctl --user is-active',
-  'tailscale status', 'tailscale serve status', 'gh auth status',
-  'gh pr list', 'gh pr view', 'gh pr diff', 'gh pr checks',
 ];
+// Exact commands only, no further arguments: their tools also have flags that write, serve or run
+// things (ip ... netns exec / link set, tailscale status --web).
+const READ_ONLY_EXACT = ['ip -br addr', 'ip -br a', 'ip -br link', 'tailscale status', 'tailscale serve status', 'sudo -n -l'];
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Skill',
-  ...READ_ONLY_BASH.map((c) => `Bash(${c}:*)`), 'Bash(sudo -n -l)',
+  ...READ_ONLY_BASH.map((c) => `Bash(${c}:*)`), ...READ_ONLY_EXACT.map((c) => `Bash(${c})`),
 ];
 // Handing work to another live Claude Code session on this machine. Opt-in (install.sh), because
 // it widens who can act on a spoken request. With it on, both tools run without a tap (relay mode
@@ -81,6 +86,10 @@ const HOOK_TOKEN = crypto.randomBytes(18).toString('hex');
 const CONFIRM_TIMEOUT_MS = 120 * 1000;
 const CONFIRM_QUEUE_MAX = 5;
 const PERMISSION_SETTINGS_FILE = path.join(STATE, 'claude-settings.json');
+// The app's own secrets, by absolute path (`//` starts an absolute path in rule syntax): login
+// cookies, the passphrase, the hook token, the session pointer. The rest of the state dir stays
+// reachable on purpose: the agent switches away mode by writing away.json there.
+const APP_SECRETS = [SESSIONS_FILE, TOKEN_FILE, PERMISSION_SETTINGS_FILE, CLAUDE_SESSION_FILE].map((f) => `/${path.resolve(f)}`);
 const writePermissionSettings = () => {
   const settings = {
     permissions: {
@@ -88,6 +97,7 @@ const writePermissionSettings = () => {
         'Read(./**/secrets/**)', 'Read(./**/credentials*)', 'Read(./**/.env*)',
         'Edit(./**/secrets/**)', 'Edit(./**/credentials*)', 'Edit(./**/.env*)',
         'Write(./**/secrets/**)', 'Write(./**/credentials*)', 'Write(./**/.env*)',
+        ...['Read', 'Edit', 'Write'].flatMap((t) => APP_SECRETS.map((f) => `${t}(${f})`)),
       ],
     },
     hooks: {
