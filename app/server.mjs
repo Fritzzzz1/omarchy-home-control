@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBody } from './request-body.mjs';
@@ -448,6 +449,47 @@ const setSpeechRate = (r) => {
   log(`speech rate -> ${r}x`);
   return true;
 };
+// Speech volume on this machine's own output, set from the dashboard. Like the rate it only
+// touches the player this server spawns (never the system mixer or the phone), and it is on
+// disk so a restart keeps it. A missing file means full volume, which is how playback sounded
+// before this setting existed.
+const VOLUME_FILE = path.join(STATE, 'volume.json');
+const clampLevel = (n) => Math.min(100, Math.max(0, Math.round(n)));
+let volume = (() => { const v = readJson(VOLUME_FILE, {}); return { level: Number.isFinite(v.level) ? clampLevel(v.level) : 100, muted: v.muted === true }; })();
+const playerVolume = () => (volume.muted ? 0 : volume.level);
+// Accepts level (0-100, clamped) and/or muted (a real boolean); anything else leaves it unchanged.
+const setVolume = (body) => {
+  const next = { ...volume };
+  const hasLevel = body.level !== undefined && body.level !== null && body.level !== '';
+  if (hasLevel) { const n = Number(body.level); if (!Number.isFinite(n)) return false; next.level = clampLevel(n); }
+  if (body.muted !== undefined) { if (typeof body.muted !== 'boolean') return false; next.muted = body.muted; }
+  if (!hasLevel && body.muted === undefined) return false;
+  const changed = next.level !== volume.level || next.muted !== volume.muted;
+  volume = next;
+  if (!changed) return true;
+  try { writeJson(VOLUME_FILE, volume); } catch (e) { log(`volume not saved: ${e.message}`); }
+  applyLiveVolume();
+  return true;
+};
+// A change should be heard mid-sentence, not only from the next one. mpv listens on a JSON IPC
+// socket for that; ffplay has no equivalent, so with ffplay a change applies from the next
+// sentence. The socket lives in STATE unless that path is too long for a Unix socket (about
+// 104 bytes), in which case it goes to the temp dir under a name derived from STATE.
+const MPV_SOCKET = (() => {
+  const inState = path.join(STATE, 'mpv.sock');
+  if (Buffer.byteLength(inState) <= 100) return inState;
+  return path.join(os.tmpdir(), `home-control-mpv-${crypto.createHash('sha1').update(STATE).digest('hex').slice(0, 10)}.sock`);
+})();
+let localIpc = null;   // the socket of the mpv playing right now, if any
+const removeMpvSocket = () => { try { fs.rmSync(MPV_SOCKET, { force: true }); } catch {} };
+const applyLiveVolume = () => {
+  if (!localIpc) return;
+  const sock = net.createConnection(localIpc);
+  sock.setTimeout(1000, () => sock.destroy());
+  // Best effort: a player that is just starting or just exited simply misses this one change.
+  sock.on('error', () => {});
+  sock.on('connect', () => sock.end(JSON.stringify({ command: ['set_property', 'volume', playerVolume()] }) + '\n'));
+};
 // Away mode: when true, replies are still sent to the phone as normal, but this machine's own
 // speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
 // (it has filesystem access) when the user says they're leaving or back — no route needed for a single
@@ -483,16 +525,19 @@ const playLocally = (file, index = null, text = '') => {
     if (index !== null) nowPlaying = { index, text };
     const clear = () => { if (nowPlaying && nowPlaying.index === index) nowPlaying = null; };
     const tryFfplay = (origErr) => {
-      const fp = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', ...(speechRate === 1 ? [] : ['-af', `atempo=${speechRate}`]), file], { stdio: 'ignore' });
+      const fp = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(playerVolume()), ...(speechRate === 1 ? [] : ['-af', `atempo=${speechRate}`]), file], { stdio: 'ignore' });
       localChild = fp;
+      localIpc = null;
       fp.on('error', (e) => { log(`local playback failed: no mpv or ffplay (${origErr?.message || e.message})`); localChild = null; clear(); resolve(); });
       fp.on('exit', () => { localChild = null; clear(); resolve(); });
     };
     if (LOCAL_PLAYER === 'ffplay') { tryFfplay(); return; }
-    const child = spawn(LOCAL_PLAYER, ['--no-terminal', '--really-quiet', `--speed=${speechRate}`, file], { stdio: 'ignore' });
+    removeMpvSocket();   // one left by a player that was killed would refuse connections
+    const child = spawn(LOCAL_PLAYER, ['--no-terminal', '--really-quiet', `--speed=${speechRate}`, `--volume=${playerVolume()}`, `--input-ipc-server=${MPV_SOCKET}`, file], { stdio: 'ignore' });
     localChild = child;
-    child.on('error', tryFfplay);
-    child.on('exit', () => { localChild = null; clear(); resolve(); });
+    localIpc = MPV_SOCKET;
+    child.on('error', (e) => { localIpc = null; tryFfplay(e); });
+    child.on('exit', () => { localChild = null; localIpc = null; removeMpvSocket(); clear(); resolve(); });
   }));
 };
 // Skip: bumps localTurn so anything already queued but not yet playing becomes a no-op, and
@@ -697,6 +742,11 @@ const server = http.createServer(async (req, res) => {
       const ok = setSpeechRate(body.rate);
       return json(res, ok ? 200 : 400, { ok, rate: speechRate });
     }
+    if (url.pathname === '/api/volume' && req.method === 'GET') return json(res, 200, volume);
+    if (url.pathname === '/api/volume' && req.method === 'POST') {
+      const ok = setVolume(await readJsonRequest(req));
+      return json(res, ok ? 200 : 400, { ok, ...volume });
+    }
     if (url.pathname === '/api/reset' && req.method === 'POST') {
       const old = claudeSession();
       // Clear the session first: stopClaude starts the next process, and it must not resume this one.
@@ -710,7 +760,7 @@ const server = http.createServer(async (req, res) => {
       log(`session reset (was ${old.id}, ${old.turns} turns)`);
       return json(res, 200, { ok: true });
     }
-    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, away: isAway() }); }
+    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, volume, away: isAway() }); }
     if (url.pathname === '/api/session-stats') return json(res, 200, sessionStats());
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
