@@ -61,7 +61,9 @@ Dashboard restarts separately: `systemctl --user restart home-control-dashboard`
 - Verified only on the tested chain above
 - Linux + systemd user services only
 - Phone page loads jsdelivr + Google Fonts, not vendored — needs internet
-- Agent unsandboxed under `VOICE_ROOT`, minus a deny list (`secrets/`, `credentials*`, `.env*`)
+- Agent unsandboxed under `VOICE_ROOT`, minus a deny list (`secrets/`, `credentials*`, `.env*`).
+  Read-only tools run freely; anything else (edits included) waits for Allow/Deny on the phone
+  (confirm button: PermissionRequest hook → `/api/permission`; no open page or 120 s → deny)
 - Passphrase-only auth, on top of the tailnet
 - Traffic goes to whatever providers are configured — local by default, remote if pointed there
 
