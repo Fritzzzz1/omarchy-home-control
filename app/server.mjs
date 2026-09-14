@@ -252,9 +252,11 @@ const spawnClaude = () => {
       }
     }
   });
-  child.on('exit', (code) => {
-    log(`claude process exited ${code}${stderr ? ': ' + stderr.trim().split('\n').pop().slice(0, 160) : ''}`);
-    if (turnProc === child) turnHandler?.({ type: 'process_exit', code, stderr });
+  let gone = false;
+  const onGone = (code, error) => {
+    if (gone) return;   // a child can report both 'error' and 'exit'
+    gone = true;
+    if (turnProc === child) turnHandler?.({ type: 'process_exit', code, stderr, error });
     if (claudeProc !== child) return;   // stopped on purpose: stopClaude starts the next one
     claudeProc = null;
     if (Date.now() - startedAt > RESPAWN.stableMs) respawnDelay = RESPAWN.minMs;
@@ -262,6 +264,16 @@ const spawnClaude = () => {
     clearTimeout(respawnTimer);
     respawnTimer = setTimeout(ensureClaude, respawnDelay);
     respawnDelay = Math.min(respawnDelay * 2, RESPAWN.maxMs);
+  };
+  // Unhandled, a failed start (no `claude` on PATH) would take the whole server down with it.
+  // An error from a process that did start (a failed kill) leaves it running; its exit is handled below.
+  child.on('error', (e) => {
+    log(`agent process error: ${e.message}`);
+    if (child.pid === undefined) onGone(null, `the agent could not start (${e.message})`);
+  });
+  child.on('exit', (code) => {
+    log(`claude process exited ${code}${stderr ? ': ' + stderr.trim().split('\n').pop().slice(0, 160) : ''}`);
+    onGone(code);
   });
   log(`agent process started (${session.id ? 'resuming ' + session.id : 'new session'})`);
   return child;
@@ -289,7 +301,7 @@ const runTurn = (text, onEvent) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => { turnHandler = null; turnProc = null; stopClaude(); reject(new Error('the agent took too long; the process was restarted')); }, TURN_TIMEOUT_MS);
   const finish = (fn) => { clearTimeout(timer); turnHandler = null; turnProc = null; fn(); };
   turnHandler = (ev) => {
-    if (ev.type === 'process_exit') return finish(() => reject(new Error(ev.stderr?.trim().split('\n').pop()?.slice(0, 160) || `claude exited ${ev.code}`)));
+    if (ev.type === 'process_exit') return finish(() => reject(new Error(ev.error || ev.stderr?.trim().split('\n').pop()?.slice(0, 160) || `claude exited ${ev.code}`)));
     if (ev.session_id) sessionId = ev.session_id;
     if (ev.type === 'stream_event' && !ev.parent_tool_use_id && ev.event?.type === 'content_block_delta' && ev.event.delta?.type === 'text_delta' && ev.event.delta.text) {
       onEvent({ type: 'delta', text: ev.event.delta.text });
