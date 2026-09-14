@@ -55,8 +55,11 @@ fresh conversation and the dashboard loses the old one. Recommend a dedicated fo
 
 ## 3. Language
 
-Ask once: "what's your default spoken language?" (default: English). Carry it into transcription
-and TTS defaults below.
+Ask once: "what's your default spoken language?" Default is always English — never assume
+Hebrew or any other language, even if this machine already has a Hebrew model. If they want
+Hebrew, use the ivrit.ai Hebrew model for transcription (see `setup/fallbacks/transcription.md`);
+otherwise stay on an English model. Carry the answer into transcription and TTS below, and write
+it as `VOICE_LANG` in `config.env` (`en`, `he`, …).
 
 ## 4. Input source
 
@@ -75,7 +78,8 @@ If local mic input was chosen or the phone is in play, ask whether they already 
 transcription solution reachable on their private network. If yes: collect connection details,
 authenticate if needed, adapt to its protocol, and validate with a real transcription request.
 
-If none: see `setup/fallbacks/transcription.md`.
+If none: see `setup/fallbacks/transcription.md`. Honor the language from §3 — English models
+by default; the ivrit.ai Hebrew model only if they asked for Hebrew.
 
 ## 6. Text-to-speech
 
@@ -86,8 +90,10 @@ validate synthesis + playback. If none: see `setup/fallbacks/tts.md`.
 Ask whether to enable the optional speech-rewrite pass (an extra model call that rewords
 long/formatted replies for the ear before TTS). Default it to the cheapest model available for
 the confirmed provider (or a local model, if one's already running) — cost stays low, not zero.
-On by default; say so plainly. Write their answer into `config.env` as an explicit boolean —
-asking it and not persisting it is worse than not asking; validate it if enabled.
+On by default; say so plainly. Write their answer into `config.env` as `VOICE_SPEECH_REWRITE=on`
+or `VOICE_SPEECH_REWRITE=off` — asking it and not persisting it is worse than not asking. If you
+use `install.sh`, pass `--speech-rewrite on|off` so the key is actually rendered. Validate the
+pass if it is enabled.
 
 ## 7. Remote access (optional)
 
@@ -131,7 +137,7 @@ later is `git pull` then `home-control-ctl restart`; switching branches here cha
 app too.
 
 `install.sh`/`uninstall.sh` can do this mechanical part for you — once you know the real values,
-`./install.sh --whisper-model ... --pwa-name ...` is there to help, not required. Use it if it
+`./install.sh --whisper-model ... --pwa-name ... --speech-rewrite on|off --lang en` is there to help, not required. Use it if it
 fits what you've learned about this machine; adapt or skip pieces of it if it doesn't.
 
 - Desktop dashboard (`app/monitor.html`/`app/monitor.mjs`): a nice-to-have, on by default, but
@@ -164,8 +170,10 @@ exercising them, not just checking that processes are running.
 Then do **one real round trip with the human**: have them speak into whichever input was
 configured and confirm out loud (or in text) that they heard/saw the reply on the configured
 output(s) — phone, local speakers, and/or the dashboard. Only after they confirm it worked do
-you write `~/.config/home-control/config.env` and consider setup complete. Don't self-certify
-from automated checks alone — this last step is a human witness, not a script.
+you consider setup complete. `config.env` must already contain every machine-specific key
+(`VOICE_SPEECH_REWRITE` and `VOICE_LANG` included) — do not rewrite that file at the end and
+drop answers you asked earlier. Don't self-certify from automated checks alone — this last step
+is a human witness, not a script.
 
 If the confirmed runtime is Claude Code and delegation (§8) is on, close by telling the user what
 `CLAUDE.md` says: delegation only reaches a session that's actually running at the moment the

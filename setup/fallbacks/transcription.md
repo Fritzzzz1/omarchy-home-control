@@ -18,10 +18,21 @@ Hugging Face:
 
     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-<name>.bin
 
-Pick `<name>` by chosen language and this machine's hardware — there's no fixed rule, but as a
-starting point: `small`/`small.en` for constrained hardware, `medium`/`medium.en` where accuracy
-matters more and the machine can sustain it, `large-v3` (or a quantized variant) only on capable
-hardware. Multilingual models (no `.en` suffix) are required for anything other than English.
+Default language is English. Pick an English model (`small.en`, `medium.en`, or
+`large-v3-turbo` / a quantized variant on capable hardware) unless the user asked for another
+language in setup §3. Do not install a Hebrew model, pin `-l he`, or point at a Hebrew endpoint
+just because one exists on this machine.
+
+**If they asked for Hebrew:** do not use stock multilingual whisper.cpp as the Hebrew ear. Use
+the ivrit.ai Hebrew fine-tune (`ivrit-ai/whisper-large-v3-turbo-ct2`, faster-whisper / CT2). It
+speaks the same `/inference` API as whisper.cpp — set `WHISPER_URL` at that server (locally
+this is often `http://127.0.0.1:4459` when `ivrit-whisper.service` / `~/dev/transcription` is
+already running). Pin `VOICE_LANG=he`. English speech into that endpoint comes back as Hebrew
+gibberish; it is the Hebrew path only.
+
+For any other non-English language, a multilingual GGML model (no `.en` suffix) is required;
+pass the language through as `VOICE_LANG` so `whisper-server` is started with `-l <lang>`, not
+`auto`.
 
 ## Wire-up
 

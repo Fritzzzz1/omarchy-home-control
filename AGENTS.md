@@ -19,8 +19,3 @@ one tool. Do not re-derive or duplicate the procedure here.
 If one of this app's ports is already taken by something else, that's not a blocker — ask the
 user which port they'd prefer (or pick a free one) and update the config/code to match. Never
 treat a taken port as a reason to stop or fail.
-
-## Governance
-
-`HOME_CONTROL_PLAN.md` is the product/implementation brief, maintained by Codex. Read it and
-implement from it, but do not edit it — report needed changes back to Codex instead.

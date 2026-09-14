@@ -41,6 +41,7 @@ OWNER=""                # who the agent is talking to; default: $USER's full nam
 AGENT_NAME="Home Control"
 PWA_NAME="Home"
 SPEECH_REWRITE="on"
+VOICE_LANG="en"
 PEER_DELEGATION=""      # "" = on if claude is on PATH, else off
 DO_SERVE=1
 DO_ENABLE=1
@@ -69,7 +70,15 @@ while (( $# )); do
   --agent) AGENT_NAME="$2"; shift 2 ;;
   --pwa-name) PWA_NAME="$2"; shift 2 ;;
   --speech-rewrite)
-    case "$2" in on | off) SPEECH_REWRITE="$2" ;; *) die "--speech-rewrite takes 'on' or 'off'" ;; esac
+    case "$2" in
+      on | true) SPEECH_REWRITE=on ;;
+      off | false) SPEECH_REWRITE=off ;;
+      *) die "--speech-rewrite takes 'on' or 'off'" ;;
+    esac
+    shift 2
+    ;;
+  --lang)
+    VOICE_LANG="$2"
     shift 2
     ;;
   --peer-delegation)
@@ -86,6 +95,7 @@ while (( $# )); do
   esac
 done
 
+: "${VOICE_LANG:=en}"
 : "${STATE_DIR:=$DATA_HOME/home-control/state/$LABEL}"
 if [[ -z $OWNER ]]; then
   OWNER="$(getent passwd "$USER" 2>/dev/null | cut -d: -f5 | cut -d, -f1)"
@@ -154,6 +164,7 @@ done
 
 note "cross-session delegation: $PEER_DELEGATION"
 note "speech rewrite pass: $SPEECH_REWRITE"
+note "spoken language:     $VOICE_LANG"
 note "home-screen icon: $PWA_NAME"
 
 if (( DO_SERVE )); then
@@ -278,8 +289,12 @@ VOICE_PWA_NAME=$PWA_NAME
 # The edge-tts CLI, used only as a fallback when the warm TTS worker is down.
 VOICE_EDGE_TTS=$VENV_DIR/bin/edge-tts
 
+# Default spoken language (transcription + TTS). Always written; default is English.
+# Removed or empty, a locally started whisper-server detects the language instead.
+VOICE_LANG=$VOICE_LANG
+
 # Reword long/formatted replies for speech via an extra model call before TTS.
-# "off" disables it; anything else (including unset) is on.
+# Always written. Only on or off — off disables it; missing at runtime still means on.
 VOICE_SPEECH_REWRITE=$SPEECH_REWRITE
 
 # May the agent hand work to another live Claude Code session on this machine?
