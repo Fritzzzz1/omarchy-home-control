@@ -277,9 +277,13 @@ function orbital(root){
  // 0 at the top, clockwise. A drag across the top stops at 0 or 100 instead of jumping to the other end.
  const at=e=>{const r=root.getBoundingClientRect(),x=e.clientX-r.left-r.width/2,y=e.clientY-r.top-r.height/2;if(Math.hypot(x,y)<r.width*.18)return null;let deg=Math.atan2(y,x)*180/Math.PI+90;if(deg<0)deg+=360;return Math.round(deg/3.6);};
  hit.addEventListener('pointerdown',e=>{e.preventDefault();down=true;root.classList.add('dragging');Vol.dragging++;try{hit.setPointerCapture(e.pointerId);}catch{}last=at(e);adjust(last===null?null:{level:last});});
- hit.addEventListener('pointermove',e=>{if(!down)return;let level=at(e);if(level===null)return;if(last!==null&&Math.abs(level-last)>50)level=last>50?100:0;last=level;adjust({level});});
+ // Only a real pass over the top clamps (from the top-right quarter to the top-left or back). A drag
+ // through the centre has no angle to follow, so the next reading past it starts fresh.
+ hit.addEventListener('pointermove',e=>{if(!down)return;let level=at(e);if(level===null){last=null;return;}if(last!==null&&((last<25&&level>75)||(last>75&&level<25)))level=last<25?0:100;last=level;adjust({level});});
  for(const type of ['pointerup','pointercancel','lostpointercapture'])hit.addEventListener(type,()=>{if(down){down=false;last=null;Vol.dragging--;root.classList.remove('dragging');}});
- hit.addEventListener('wheel',e=>{e.preventDefault();adjust({level:Vol.level+(e.deltaY<0?2:-2)});},{passive:false});
+ // Vertical scrolling only (sideways passes through to the page); small trackpad deltas add up, a wheel notch is 2.
+ let wheelAcc=0;
+ hit.addEventListener('wheel',e=>{if(Math.abs(e.deltaY)<=Math.abs(e.deltaX))return;e.preventDefault();wheelAcc+=e.deltaMode===1?e.deltaY*33:e.deltaY;const steps=Math.trunc(wheelAcc/50);if(!steps)return;wheelAcc-=steps*50;adjust({level:Vol.level-steps});},{passive:false});
  hit.addEventListener('keydown',e=>{if(volumeKey(e,2))adjust();});
  hit.addEventListener('focus',()=>root.classList.add('focused'));hit.addEventListener('blur',()=>root.classList.remove('focused'));
 }
