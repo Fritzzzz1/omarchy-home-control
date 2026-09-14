@@ -53,26 +53,35 @@ const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // on (below). Everything else (file edits, other shell commands) goes to the confirm button:
 // claude's PermissionRequest hook posts to /api/permission (below), the phone shows Allow/Deny,
 // and the answer goes back to claude. Secrets stay denied outright (PERMISSION_SETTINGS_FILE).
-// Prefix rules (`cmd:*`) don't look at flags or arguments, so a command is listed only if it
-// takes no file path or glob (which would print a file's contents straight past the deny rules
-// below, e.g. `cat voice-tok*`, `grep -r . <state>`) AND no flag writes a file, runs a program or
-// leaks a secret. So: no cat/head/tail/grep/wc/du (read a file by path) — the Read/Grep/Glob tools
-// do those and honour the deny rules; no git fetch (--upload-pack runs a program), git log/diff/
-// show (--output writes), ffprobe (-o writes), gh auth status (--show-token), gh pr * (--web opens
-// a browser). What's left reports machine/process state and can't be pointed at a file.
-const READ_ONLY_BASH = [
-  'git status',
-  'date', 'ls',
-  'ps', 'top -b -n 1', 'top -bn1', 'free', 'which', 'uptime', 'df', 'lspci', 'lsmod',
-  'pacman -Q', 'pacman -Qq', 'pacman -Qqe', 'pacman -Qi',
-  'systemctl status', 'systemctl --user status', 'systemctl is-active', 'systemctl --user is-active',
+// Bash is gated by a whitelist in a PreToolUse hook (/api/pretool below), not by --allowedTools:
+// Claude Code auto-approves "read-only" commands (cat, grep, ...) on its own without ever firing
+// the PermissionRequest hook, so an allow/deny list can't reach them. A PreToolUse hook runs first
+// and its `ask` forces the command to the card even when it would have been auto-approved. So a
+// command that isn't a plain, metacharacter-free member of this list goes to the phone — that
+// covers /bin/cat, `sh -c ...`, env, python -c and anything we didn't foresee, which a denylist
+// never could. The agent reads files with the Read/Grep/Glob tools, which honour the secret-file
+// rules. Metacharacters (chaining, redirects, subshells, globs) disqualify a command outright, so
+// a whitelisted head can't be turned into `ls; cat secret` or `ls $(cat secret)`.
+const BASH_METACHAR = /[;&|<>`$(){}\[\]*?~!\n\\]/;
+const BASH_WHITELIST = [
+  /^ls(?: +-[A-Za-z]+)*(?: +[\w./@:+=-]+)*$/,
+  /^git status(?: +[\w./@:+=-]+)*$/,
+  /^systemctl(?: --user)? (?:status|is-active|is-enabled|is-failed)(?: +[\w.@:_-]+)*$/,
+  /^ps(?: +-{0,2}[\w,=+-]+)*$/,
+  /^top -b ?-?n ?1(?: +.*)?$/,
+  /^(?:df|free|uptime|date|whoami|hostname|id)(?: +-[A-Za-z]+)*$/,
+  /^ip -br (?:addr|a|link|neigh)$/,
+  /^tailscale status$/,
+  /^pacman -Q(?:q|qe|i|e)?$/,
 ];
-// Exact commands only, no further arguments: their tools also have flags that write, serve or run
-// things (ip ... netns exec / link set, tailscale status --web).
-const READ_ONLY_EXACT = ['ip -br addr', 'ip -br a', 'ip -br link', 'tailscale status', 'tailscale serve status', 'sudo -n -l'];
+const bashAllowed = (cmd) => {
+  cmd = String(cmd || '').trim();
+  if (!cmd || BASH_METACHAR.test(cmd)) return false;
+  return BASH_WHITELIST.some((re) => re.test(cmd));
+};
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Skill',
-  ...READ_ONLY_BASH.map((c) => `Bash(${c}:*)`), ...READ_ONLY_EXACT.map((c) => `Bash(${c})`),
+  // No Bash entries: the PreToolUse whitelist hook (/api/pretool) governs every Bash call instead.
 ];
 // Handing work to another live Claude Code session on this machine. Opt-in (install.sh), because
 // it widens who can act on a spoken request. With it on, both tools run without a tap (relay mode
@@ -93,21 +102,6 @@ const PERMISSION_SETTINGS_FILE = path.join(STATE, 'claude-settings.json');
 // cookies, the passphrase, the hook token, the session pointer. The rest of the state dir stays
 // reachable on purpose: the agent switches away mode by writing away.json there.
 const APP_SECRETS = [SESSIONS_FILE, TOKEN_FILE, PERMISSION_SETTINGS_FILE, CLAUDE_SESSION_FILE].map((f) => `/${path.resolve(f)}`);
-// File-reading shell commands. Claude Code auto-approves them as "read-only" without firing the
-// PermissionRequest hook, so leaving them out of the allowlist is not enough — a Bash deny rule is
-// the only thing that stops them (verified). Denied so a glob or a recursive read can't print a
-// secret past the per-file rules above (cat voice-tok*, grep -r <state>). The agent reads project
-// files with the Read/Grep/Glob tools instead, which honour the per-file deny rules.
-const SECRET_READERS = [
-  'cat', 'tac', 'nl', 'head', 'tail', 'more', 'less', 'view',
-  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack',
-  'sed', 'awk', 'gawk', 'mawk', 'cut', 'sort', 'uniq', 'comm', 'join', 'paste', 'column', 'fold', 'fmt', 'pr', 'expand', 'unexpand', 'rev', 'tr', 'look', 'csplit', 'split', 'shuf', 'tsort', 'ptx',
-  'od', 'xxd', 'hexdump', 'hd', 'strings', 'base64', 'base32', 'basenc', 'uuencode', 'cksum', 'md5sum', 'sha1sum', 'sha256sum', 'sha512sum', 'b2sum',
-  'jq', 'yq', 'xmllint', 'xmlstarlet',
-  'dd', 'pv', 'tee', 'stat', 'file', 'readlink', 'realpath', 'find', 'du', 'wc',
-  'diff', 'cmp', 'sdiff', 'vimdiff',
-  'vi', 'vim', 'nvim', 'nano', 'emacs', 'ed', 'ex',
-];
 const writePermissionSettings = () => {
   const settings = {
     permissions: {
@@ -116,10 +110,12 @@ const writePermissionSettings = () => {
         'Edit(./**/secrets/**)', 'Edit(./**/credentials*)', 'Edit(./**/.env*)',
         'Write(./**/secrets/**)', 'Write(./**/credentials*)', 'Write(./**/.env*)',
         ...['Read', 'Edit', 'Write'].flatMap((t) => APP_SECRETS.map((f) => `${t}(${f})`)),
-        ...SECRET_READERS.map((c) => `Bash(${c}:*)`),
       ],
     },
     hooks: {
+      // PreToolUse gates every Bash call: whitelisted -> allow, else -> ask (the card). It runs
+      // before Claude Code's built-in read-only auto-approve, so `cat`/`grep -r` reach the card too.
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/pretool?t=${HOOK_TOKEN}`, timeout: 20 }] }],
       PermissionRequest: [{ matcher: '*', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/permission?t=${HOOK_TOKEN}`, timeout: (CONFIRM_TIMEOUT_MS / 1000) * (CONFIRM_QUEUE_MAX + 1) + 60 }] }],
     },
   };
@@ -794,10 +790,25 @@ const denyAllConfirms = (message, why) => {
   for (const c of all) answerHook(c, 'deny', message, why);
   turnClock?.resume();
 };
-const handlePermission = async (req, res) => {
+// A hook request is trusted only if it comes from loopback (no proxy headers) and carries the
+// per-process token that only the claude child was given.
+const hookAuthed = (req) => {
   const t = Buffer.from(new URL(req.url, 'http://x').searchParams.get('t') || '');
   const want = Buffer.from(HOOK_TOKEN);
-  if (!isLocalCaller(req) || t.length !== want.length || !crypto.timingSafeEqual(t, want)) {
+  return isLocalCaller(req) && t.length === want.length && crypto.timingSafeEqual(t, want);
+};
+// PreToolUse on Bash: a whitelisted, metacharacter-free command is allowed to run; everything else
+// is sent to the card. `ask` overrides Claude Code's built-in read-only auto-approve.
+const handlePreTool = async (req, res) => {
+  if (!hookAuthed(req)) { log(`pretool: refused a non-local caller (${clientIp(req)})`); return json(res, 403, { error: 'forbidden' }); }
+  const body = readJsonBody((await readBody(req, 20e6)).toString('utf8'));
+  const cmd = body.tool_name === 'Bash' ? (body.tool_input || {}).command : null;
+  const decision = body.tool_name === 'Bash' && bashAllowed(cmd) ? 'allow' : 'ask';
+  if (decision === 'ask') log(`pretool: ask -> card for ${String(cmd ?? body.tool_name).slice(0, 80)}`);
+  return json(res, 200, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision } });
+};
+const handlePermission = async (req, res) => {
+  if (!hookAuthed(req)) {
     log(`permission: refused a caller that is not the local agent (${clientIp(req)})`);
     return json(res, 403, { error: 'forbidden' });
   }
@@ -919,6 +930,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   try {
     // Before the login gate: claude's hook has no cookie. handlePermission checks caller + token.
+    if (url.pathname === '/api/pretool' && req.method === 'POST') return handlePreTool(req, res);
     if (url.pathname === '/api/permission' && req.method === 'POST') return handlePermission(req, res);
     if (url.pathname === '/login' && req.method === 'POST') {
       const body = (await readBody(req)).toString('utf8');
