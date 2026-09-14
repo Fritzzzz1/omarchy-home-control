@@ -508,7 +508,7 @@ const toggleMute = () => {
 // just unplugs the mic from the VAD, so nothing is processed meanwhile: an utterance in progress,
 // or a manual dictation, carries on from where it was.
 const HOLD_MS = 350, HOLD_LABEL = 'Paused — release to go on';
-let holdTimer = null, holding = false, labelBeforeHold = '';
+let holdTimer = null, holding = false, pressed = false, labelBeforeHold = '';
 const holdStart = () => {
   const src = vad?._mediaStreamAudioSourceNode;
   if (!on || muted || busy || !vad?.listening || !src) return;
@@ -525,10 +525,12 @@ const holdEnd = () => {
 };
 mute.addEventListener('pointerdown', (e) => {
   try { mute.setPointerCapture(e.pointerId); } catch {}   // a finger that slides off the button still ends the press here
-  clearTimeout(holdTimer); holdTimer = setTimeout(() => { holdTimer = null; holdStart(); }, HOLD_MS);
+  pressed = true; clearTimeout(holdTimer); holdTimer = setTimeout(() => { holdTimer = null; holdStart(); }, HOLD_MS);
 });
-mute.addEventListener('pointerup', () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; toggleMute(); } else holdEnd(); });
-mute.addEventListener('pointercancel', () => { clearTimeout(holdTimer); holdTimer = null; holdEnd(); });
+// A press that never became a hold is a tap: too short, or there was nothing to pause (muted, busy,
+// or off), so a long press to unmute still unmutes.
+mute.addEventListener('pointerup', () => { if (!pressed) return; pressed = false; clearTimeout(holdTimer); holdTimer = null; if (holding) holdEnd(); else toggleMute(); });
+mute.addEventListener('pointercancel', () => { pressed = false; clearTimeout(holdTimer); holdTimer = null; holdEnd(); });
 mute.addEventListener('contextmenu', (e) => e.preventDefault());
 mute.onclick = (e) => { if (e.detail === 0) toggleMute(); };   // keyboard (Enter/Space); pointer presses are handled above
 const setEarMuted = (v) => { earMuted = v; player.muted = v; setToggleButton(earMute, 'earSlash', v, 'Unmute earphone', 'Mute earphone'); };
