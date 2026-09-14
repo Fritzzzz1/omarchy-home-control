@@ -240,6 +240,8 @@ const spawnClaude = () => {
       if (ev.type === 'result' && !ev.is_error && ev.result) {
         lastTurnAt = Date.now();
         const relayTurnId = `relay-${crypto.randomBytes(6).toString('hex')}`;
+        // Read the sender now: while this reply renders, the next session's message can reach the file.
+        const from = relaySender(ev.session_id || claudeSession().id);
         (async () => {
           const spoken = stripMarkdown(ev.result);
           const groups = sentenceGroups(spoken);
@@ -248,7 +250,7 @@ const spawnClaude = () => {
             const a = await renders[i];
             if (a) { playLocally(a.file, i, groups[i]); logEvent(relayTurnId, { type: 'audio', url: a.url, index: i, text: groups[i] }); }
           }
-          logEvent(relayTurnId, { type: 'text', text: spoken, full: ev.result, from: relaySender(ev.session_id || claudeSession().id) });
+          logEvent(relayTurnId, { type: 'text', text: spoken, full: ev.result, from });
         })();
       }
     }
