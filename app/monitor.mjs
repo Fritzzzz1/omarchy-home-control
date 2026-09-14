@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { readBody } from './request-body.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const label = process.env.VOICE_LABEL || 'voice';
@@ -108,6 +109,24 @@ async function fetchLiveState() {
   } catch { return { online: false, live: null }; }
 }
 
+// The page changes the speech volume through here, since only this server holds the voice
+// server's login. A 401 gets one fresh login and a retry, so an expired cookie doesn't cost
+// the user a drag that did nothing.
+async function postVolume(body) {
+  const send = () => fetch(`${voiceOrigin}/api/volume`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
+    body, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  try {
+    let r = await send();
+    if (r.status === 401) { await r.body?.cancel(); if (await login()) r = await send(); }
+    if (r.status === 401) { await r.body?.cancel(); return { status: 502, body: { ok: false, error: 'login' } }; }
+    let json = {};
+    try { json = await r.json(); } catch {}
+    return { status: r.status, body: json };
+  } catch { return { status: 502, body: { ok: false, error: 'unreachable' } }; }
+}
+
 const readEvents = () => tailLines('voice.log', 100).map(line => ({ at: line.slice(0, 24), text: line.slice(25) }));
 const readTurns = () => tailLines('transcript.jsonl', 30).flatMap(line => {
   try { const t = JSON.parse(line); return [{ at: t.at, user: t.user, spoken: t.spoken, ms: t.ms }]; } catch { return []; }
@@ -118,7 +137,7 @@ async function snapshot() {
   const { online, live } = await fetchLiveState();
   return {
     online, events: readEvents(), turns: readTurns(), session: sessionSnapshot(),
-    nowPlaying: live?.nowPlaying || null, sentences: live?.sentences || [],
+    nowPlaying: live?.nowPlaying || null, sentences: live?.sentences || [], volume: live?.volume || null,
     at: new Date().toISOString(),
   };
 }
@@ -128,6 +147,15 @@ http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
+  if (req.url === '/api/volume' && req.method === 'POST') {
+    // JSON only, from this page only: a form on another site can't send application/json
+    // without a preflight this server never answers, and a browser always sends its Origin.
+    const origin = req.headers.origin;
+    if (!(req.headers['content-type'] || '').startsWith('application/json') || (origin && origin !== `http://${req.headers.host}`)) { res.writeHead(403); return res.end(); }
+    const { status, body } = await postVolume((await readBody(req, 4096)).toString('utf8'));
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(body));
+  }
   if (req.method !== 'GET') { res.writeHead(405); return res.end(); }
   if (req.url === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(fs.readFileSync(path.join(here, 'monitor.html'))); }
   if (req.url === '/api/activity') {
