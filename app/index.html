@@ -381,6 +381,7 @@ async function turn(init) {
   const watchdog = new AbortController(); let quiet = null;
   const alive = () => { clearTimeout(quiet); quiet = setTimeout(() => watchdog.abort(), 180000); };
   alive();
+  liveStreams++;
   try {
     let res = await fetch('/api/turn', { method: 'POST', ...init, signal: watchdog.signal });
     for (let wait = 0; res.status === 409 && wait < 90; wait += 2) { setMode('thinking', 'Finishing the last answer first'); await sleep(2000); if (mine !== currentTurn) return; res = await fetch('/api/turn', { method: 'POST', ...init, signal: watchdog.signal }); }
@@ -396,8 +397,8 @@ async function turn(init) {
       for (const p of parts) {
         const line = p.split('\n').find((l) => l.startsWith('data: ')); if (!line) continue;
         const ev = JSON.parse(line.slice(6));
-        // Advance the catch-up cursor past this id — see server.mjs's send() for why it is stamped.
-        if (typeof ev.id === 'number' && ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); }
+        // Shown live, so the poller skips it (see server.mjs's send() for why it is stamped).
+        if (typeof ev.id === 'number') markLive(ev.id);
         if (mine !== currentTurn) return;
         if (ev.type === 'ignored') { setMode('listening', "Didn't catch that"); return; }
         if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }
@@ -410,6 +411,7 @@ async function turn(init) {
   } catch (e) { setMode('error', e.name === 'AbortError' ? 'The answer went quiet; listening again' : e.message); }
   finally {
     clearTimeout(quiet);
+    liveStreams--; pollEvents();   // catches the cursor up now, so a reload right after doesn't show this turn again
     if (mine === currentTurn) {
       await whilePlaying();
       busy = false;
@@ -621,9 +623,11 @@ fetch('/api/transcript').then((r) => r.json()).then((rows) => { for (const row o
 // the live SSE path uses, and its audio goes through the exact same queue/playNext() the live
 // path uses, so it inherits earMuted, the interrupt/skip handling, and the "don't play into a
 // hot mic" protection for free.
-// The cursor alone is the dedup mechanism: ids are monotonic, the poll always asks for
-// "after=<cursor>", and the server only ever returns ids above it — on both the live SSE path
-// and the catch-up path the cursor is advanced past every id seen, so nothing renders twice.
+// Dedup: ids are monotonic and the poll always asks for "after=<cursor>". A turn's live events share
+// that sequence with relay replies, so a relay reply can be logged between two of them, and the
+// stream can show 51 before the poller has seen 50. So the stream never moves the cursor past an id
+// the page hasn't seen: its ids go into liveIds, the cursor moves over them only while nothing unseen
+// lies below, and the poller skips them. Each turn polls when it ends, so the cursor catches up.
 // It is persisted (with the server's boot id) so a reload doesn't re-render what this tab
 // already showed, and so a server restart can be detected and the cursor reset to 0.
 let eventsCursor = 0, eventsBootId = null;
@@ -632,6 +636,10 @@ try {
   if (saved && typeof saved.cursor === 'number') { eventsCursor = saved.cursor; eventsBootId = saved.bootId || null; }
 } catch {}
 const saveEventsState = () => { try { localStorage.setItem('eventsState', JSON.stringify({ cursor: eventsCursor, bootId: eventsBootId })); } catch {} };
+const liveIds = new Set();
+let liveStreams = 0;   // turn streams open right now
+const advanceCursor = () => { if (!liveIds.has(eventsCursor + 1)) return; while (liveIds.delete(eventsCursor + 1)) eventsCursor++; saveEventsState(); };
+const markLive = (id) => { if (id > eventsCursor) liveIds.add(id); advanceCursor(); };
 const catchUpAudioByTurn = {};
 // Plays a caught-up turn's sentences through the same player/queue/currentTurn mechanism turn()
 // uses, in the order the server produced them. It never cuts off what you're saying: it waits until
@@ -666,7 +674,7 @@ const handleCaughtUpEvent = async (ev) => {
   }
   // other event types (status/done/error/ignored) carry nothing worth catching up on
 };
-let pollInFlight = false;   // the 15s interval and a visibilitychange firing close together must not overlap
+let pollInFlight = false, pollAgain = false;   // polls never overlap; one asked for meanwhile runs right after
 const fetchAndApplyEvents = async () => {
   const res = await fetch('/api/events?after=' + eventsCursor);
   if (!res.ok) return;
@@ -675,21 +683,26 @@ const fetchAndApplyEvents = async () => {
     // the server restarted since we last polled: its event log is gone, our cursor points
     // nowhere it can ever match again — start over from 0 instead of polling forever for
     // nothing, then re-fetch once with the corrected cursor so nothing waits another 15s.
-    eventsCursor = 0; eventsBootId = data.bootId; saveEventsState();
+    eventsCursor = 0; eventsBootId = data.bootId; liveIds.clear(); saveEventsState();
     return fetchAndApplyEvents();
   }
   // Saved per event, before it is handled: a caught-up reply can wait a long time to play (behind a
   // turn, while you're talking, or for a tap), and a reload during that wait must not show and
   // play it a second time.
   for (const ev of data.events || []) {
-    if (ev.id > eventsCursor) { eventsCursor = ev.id; saveEventsState(); }
-    await handleCaughtUpEvent(ev);
+    if (ev.id <= eventsCursor) continue;
+    const live = liveIds.delete(ev.id);
+    // While a turn streams, an event of a turn that the stream hasn't shown is most likely still on its
+    // way over it: stop here and leave it to the poll at the end of the turn. Relay replies go through.
+    if (!live && liveStreams && !String(ev.turnId).startsWith('relay-')) break;
+    eventsCursor = ev.id; saveEventsState(); advanceCursor();
+    if (!live) await handleCaughtUpEvent(ev);
   }
 };
 async function pollEvents() {
-  if (pollInFlight) return;
+  if (pollInFlight) { pollAgain = true; return; }
   pollInFlight = true;
-  try { await fetchAndApplyEvents(); } catch {} finally { pollInFlight = false; }
+  try { do { pollAgain = false; await fetchAndApplyEvents(); } while (pollAgain); } catch {} finally { pollInFlight = false; }
 }
 setInterval(() => { if (document.visibilityState === 'visible') pollEvents(); }, 15000);
 // the visibilitychange poll lives with keepAwake's listener, further up

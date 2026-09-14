@@ -603,8 +603,8 @@ const handleTurn = async (req, res) => {
   // event log, so a phone that reconnects later — or another device polling /api/events — can
   // catch up on the same turn.
   // The id is assigned by the log, then stamped onto the very event the phone receives live, so
-  // the client can advance its catch-up cursor past it right away — otherwise the poller has no
-  // way to know a live-streamed event was already shown, and re-renders every turn a second time.
+  // the client's poller knows a live-streamed event was already shown and doesn't render the turn
+  // a second time.
   const send = (ev) => { const entry = logEvent(turnId, ev); sendRaw({ ...ev, id: entry.id }); };
   const started = Date.now();
   try {
