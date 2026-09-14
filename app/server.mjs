@@ -34,10 +34,19 @@ const TTS_PYTHON = process.env.HOME_CONTROL_TTS_PYTHON || 'python3';
 const MODEL = process.env.VOICE_MODEL || '';
 const EFFORT = process.env.VOICE_EFFORT || '';
 const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';
+const VOICE_LANG = (process.env.VOICE_LANG || 'en').trim().toLowerCase() || 'en';
 // Off means: a page-shaped reply is still de-markdowned (stripMarkdown), just not sent to
 // Haiku to be reworded for the ear first. That second call is real extra cost, not free
-// polish - asked about at install time, see VOICE_SPEECH_REWRITE in config.env.
-const SPEECH_REWRITE_ON = process.env.VOICE_SPEECH_REWRITE !== 'off';
+// polish - asked about at install time. config.env must set VOICE_SPEECH_REWRITE=on|off
+// (true/false also accepted). Unset defaults to on; anything else is ignored and stays on.
+const parseOnOff = (raw, unset = true) => {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (!v) return unset;
+  if (v === 'on' || v === 'true' || v === '1') return true;
+  if (v === 'off' || v === 'false' || v === '0') return false;
+  return unset;
+};
+const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // By design: the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebFetch', 'WebSearch',
@@ -346,10 +355,10 @@ const startWhisper = () => {
   if (WHISPER_URL) return;            // transcription lives on another machine
   if (whisper) return;
   if (!fs.existsSync(WHISPER_MODEL)) { log(`whisper: model missing at ${WHISPER_MODEL} — voice input off, text only`); return; }
-  whisper = spawn('whisper-server', ['-m', WHISPER_MODEL, '--host', HOST, '--port', String(WHISPER_PORT), '-l', 'auto', '-nt', '-t', '8'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  whisper = spawn('whisper-server', ['-m', WHISPER_MODEL, '--host', HOST, '--port', String(WHISPER_PORT), '-l', VOICE_LANG, '-nt', '-t', '8'], { stdio: ['ignore', 'ignore', 'pipe'] });
   whisper.stderr.on('data', (d) => { const line = String(d).trim(); if (/error|failed/i.test(line)) log(`whisper: ${line.slice(0, 200)}`); });
   whisper.on('exit', (code) => { log(`whisper exited ${code}`); whisper = null; });
-  log(`whisper starting on ${HOST}:${WHISPER_PORT}`);
+  log(`whisper starting on ${HOST}:${WHISPER_PORT} lang=${VOICE_LANG}`);
   const silence = Buffer.alloc(44 + 32000);
   silence.write('RIFF', 0); silence.writeUInt32LE(36 + 32000, 4); silence.write('WAVE', 8); silence.write('fmt ', 12); silence.writeUInt32LE(16, 16); silence.writeUInt16LE(1, 20); silence.writeUInt16LE(1, 22);
   silence.writeUInt32LE(16000, 24); silence.writeUInt32LE(32000, 28); silence.writeUInt16LE(2, 32); silence.writeUInt16LE(16, 34); silence.write('data', 36); silence.writeUInt32LE(32000, 40);
@@ -768,5 +777,9 @@ server.listen(PORT, HOST, () => {
   startWhisper();
   startTts();
   ensureClaude();
-  log(`voice server on http://${HOST}:${PORT} root=${ROOT}`);
+  const rewriteRaw = String(process.env.VOICE_SPEECH_REWRITE || '').trim();
+  if (rewriteRaw && !/^(on|off|true|false|0|1)$/i.test(rewriteRaw)) {
+    log(`VOICE_SPEECH_REWRITE=${rewriteRaw} is not on|off; treating as on`);
+  }
+  log(`voice server on http://${HOST}:${PORT} root=${ROOT} lang=${VOICE_LANG} speech-rewrite=${SPEECH_REWRITE_ON ? 'on' : 'off'}`);
 });
