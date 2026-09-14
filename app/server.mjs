@@ -454,15 +454,22 @@ const setSpeechRate = (r) => {
 // disk so a restart keeps it. A missing file means full volume, which is how playback sounded
 // before this setting existed.
 const VOLUME_FILE = path.join(STATE, 'volume.json');
-const clampLevel = (n) => Math.min(100, Math.max(0, Math.round(n)));
+// Levels run to 140: 100 is the normal top, and the range above it adds loudness under a limiter.
+const VOLUME_MAX = 140;
+const clampLevel = (n) => Math.min(VOLUME_MAX, Math.max(0, Math.round(n)));
 let volume = (() => { const v = readJson(VOLUME_FILE, {}); return { level: Number.isFinite(v.level) ? clampLevel(v.level) : 100, muted: v.muted === true }; })();
-const playerVolume = () => (volume.muted ? 0 : volume.level);
-// Speech plays 1.5 dB above the file as generated, at every level. edge-tts peaks reach about
-// -2 dBFS at their loudest, so that is louder without clipping. mpv's volume is cubic
-// (gain = (v/100)^3), so scaling it by 10^(dB/60) adds the same dB at every level.
+// The player's own volume only turns speech down (0-100, 0 when muted). It is applied after the
+// filters below, so it can never push the limited signal past full scale.
+const playerVolume = () => (volume.muted ? 0 : Math.min(volume.level, 100));
+// Loudness is added in a filter, ahead of a limiter. Every level gets 1.5 dB over the file as
+// generated: edge-tts peaks reach about -2 dBFS at their loudest, so up to 100 the limiter has
+// nothing to do. Above 100 the gain follows the same cubic curve as mpv's volume
+// (gain = (v/100)^3, so 60*log10(v/100) dB; 140 is about +8.8 dB), and the limiter holds peaks
+// just under full scale, so loud speech gets denser instead of clipping.
 const SPEECH_BOOST_DB = 1.5;
-const mpvVolume = () => Math.round(playerVolume() * 10 ** (SPEECH_BOOST_DB / 60) * 10) / 10;
-// Accepts level (0-100, clamped) and/or muted (a real boolean); anything else leaves it unchanged.
+const LIMITER = 'alimiter=limit=0.966:level=disabled';   // -0.3 dBFS, no automatic make-up gain
+const speechGainDb = () => Math.round((SPEECH_BOOST_DB + (volume.level > 100 ? 60 * Math.log10(volume.level / 100) : 0)) * 100) / 100;
+// Accepts level (0-140, clamped) and/or muted (a real boolean); anything else leaves it unchanged.
 const setVolume = (body) => {
   const next = { ...volume };
   const hasLevel = body.level !== undefined && body.level !== null && body.level !== '';
@@ -493,7 +500,12 @@ const applyLiveVolume = () => {
   sock.setTimeout(1000, () => sock.destroy());
   // Best effort: a player that is just starting or just exited simply misses this one change.
   sock.on('error', () => {});
-  sock.on('connect', () => sock.end(JSON.stringify({ command: ['set_property', 'volume', mpvVolume()] }) + '\n'));
+  // mpv answers the af-command with an error even though the gain filter applies it (the command
+  // also reaches filters that don't take it), so like the rest it isn't checked.
+  sock.on('connect', () => sock.end([
+    { command: ['set_property', 'volume', playerVolume()] },
+    { command: ['af-command', 'gain', 'volume', `${speechGainDb()}dB`] },
+  ].map((c) => JSON.stringify(c) + '\n').join('')));
 };
 // Away mode: when true, replies are still sent to the phone as normal, but this machine's own
 // speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
@@ -530,7 +542,7 @@ const playLocally = (file, index = null, text = '') => {
     if (index !== null) nowPlaying = { index, text };
     const clear = () => { if (nowPlaying && nowPlaying.index === index) nowPlaying = null; };
     const tryFfplay = (origErr) => {
-      const fp = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(playerVolume()), '-af', [`volume=${SPEECH_BOOST_DB}dB`, ...(speechRate === 1 ? [] : [`atempo=${speechRate}`])].join(','), file], { stdio: 'ignore' });
+      const fp = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(playerVolume()), '-af', [`volume=${speechGainDb()}dB`, LIMITER, ...(speechRate === 1 ? [] : [`atempo=${speechRate}`])].join(','), file], { stdio: 'ignore' });
       localChild = fp;
       localIpc = null;
       fp.on('error', (e) => { log(`local playback failed: no mpv or ffplay (${origErr?.message || e.message})`); localChild = null; clear(); resolve(); });
@@ -538,7 +550,7 @@ const playLocally = (file, index = null, text = '') => {
     };
     if (LOCAL_PLAYER === 'ffplay') { tryFfplay(); return; }
     removeMpvSocket();   // one left by a player that was killed would refuse connections
-    const child = spawn(LOCAL_PLAYER, ['--no-terminal', '--really-quiet', `--speed=${speechRate}`, `--volume=${mpvVolume()}`, `--input-ipc-server=${MPV_SOCKET}`, file], { stdio: 'ignore' });
+    const child = spawn(LOCAL_PLAYER, ['--no-terminal', '--really-quiet', `--speed=${speechRate}`, `--volume=${playerVolume()}`, `--af=@gain:lavfi=[volume=${speechGainDb()}dB],lavfi=[${LIMITER}]`, `--input-ipc-server=${MPV_SOCKET}`, file], { stdio: 'ignore' });
     localChild = child;
     localIpc = MPV_SOCKET;
     child.on('error', (e) => { localIpc = null; tryFfplay(e); });
