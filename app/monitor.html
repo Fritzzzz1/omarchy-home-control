@@ -253,25 +253,29 @@ $('freeze').onclick=()=>{frozen=!frozen;$('freeze').textContent=frozen?'Resume f
 // server's value takes over again on a poll once nothing is being adjusted or sent.
 // Levels run to 140. 100 is the normal top; above it the server adds loudness under a limiter.
 const VOL_MAX=140;
-const Vol={level:100,muted:false,known:false,speaking:false,views:[],dragging:0,pending:null,sending:false,timer:0,holdUntil:0,
+const Vol={level:100,shown:100,glideRaf:0,muted:false,known:false,speaking:false,views:[],dragging:0,pending:null,sending:false,timer:0,holdUntil:0,
  render(){for(const view of this.views)view.render();},
- fromServer(v){if(!v||this.dragging||this.pending||this.sending||Date.now()<this.holdUntil)return;if(this.known&&v.level===this.level&&v.muted===this.muted)return;this.level=v.level;this.muted=v.muted;this.known=true;this.render();},
+ // `shown` is the level the controls draw. A key press glides it to the new level (a quarter second, easing out, picking up
+ // from wherever it is if another press comes mid-way); drags, scrolling and changes from elsewhere jump, so a drag stays under the pointer.
+ show(glide){cancelAnimationFrame(this.glideRaf);const from=this.shown,to=this.level;if(!glide||from===to||matchMedia('(prefers-reduced-motion: reduce)').matches){this.shown=to;this.render();return;}
+  const start=performance.now(),step=now=>{const t=Math.min(1,(now-start)/260);this.shown=t<1?from+(to-from)*(1-(1-t)**3):to;this.render();if(t<1)this.glideRaf=requestAnimationFrame(step);};this.glideRaf=requestAnimationFrame(step);},
+ fromServer(v){if(!v||this.dragging||this.pending||this.sending||Date.now()<this.holdUntil)return;if(this.known&&v.level===this.level&&v.muted===this.muted)return;this.level=v.level;this.muted=v.muted;this.known=true;this.show();},
  // Nothing to change until the server's level has arrived: a relative step from the placeholder 100 could make speech loud.
  // Turning up (or dragging, which aims at a spot) unmutes; turning down while muted only moves the level, quietly.
- set(patch){if(!this.known)return;if('level' in patch){patch.level=Math.round(Math.min(VOL_MAX,Math.max(0,patch.level)));if(this.muted&&patch.level>0&&(patch.level>this.level||this.dragging))patch.muted=false;}if(patch.level===this.level&&(patch.muted??this.muted)===this.muted)return;Object.assign(this,patch);this.known=true;this.pending={...this.pending,...patch};this.holdUntil=Date.now()+1500;this.render();if(!this.timer)this.timer=setTimeout(()=>this.flush(),150);},
+ set(patch,glide){if(!this.known)return;if('level' in patch){patch.level=Math.round(Math.min(VOL_MAX,Math.max(0,patch.level)));if(this.muted&&patch.level>0&&(patch.level>this.level||this.dragging))patch.muted=false;}if(patch.level===this.level&&(patch.muted??this.muted)===this.muted)return;Object.assign(this,patch);this.known=true;this.pending={...this.pending,...patch};this.holdUntil=Date.now()+1500;this.show(glide);if(!this.timer)this.timer=setTimeout(()=>this.flush(),150);},
  async flush(){this.timer=0;if(this.sending||!this.pending)return;const body=this.pending;this.pending=null;this.sending=true;
-  try{const r=await fetch('/api/volume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(4000)});const v=await r.json();if(r.ok&&!this.pending&&!this.dragging){this.level=v.level;this.muted=v.muted;this.render();}}catch{}
+  try{const r=await fetch('/api/volume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(4000)});const v=await r.json();if(r.ok&&!this.pending&&!this.dragging&&(v.level!==this.level||v.muted!==this.muted)){this.level=v.level;this.muted=v.muted;this.show();}}catch{}
   finally{this.sending=false;this.holdUntil=Date.now()+1500;if(this.pending)this.flush();}},
  setSpeaking(on){on=!!on;if(on!==this.speaking){this.speaking=on;this.render();}}
 };
 const volText=()=>(Vol.muted?'Muted, ':'')+Vol.level+' percent';
 const VOL_SPEAKER_SVG='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.3 8.7a5 5 0 0 1 0 6.6"/><path d="M19 6a8.7 8.7 0 0 1 0 12"/></svg>',VOL_MUTED_SVG='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
 // 9 and 0 turn speech down and up from anywhere on the page, the same keys mpv uses; the focused ring and pill keep their arrow keys.
-document.addEventListener('keydown',e=>{if((e.key!=='9'&&e.key!=='0')||e.ctrlKey||e.metaKey||e.altKey||e.defaultPrevented||['INPUT','TEXTAREA'].includes(e.target.tagName))return;e.preventDefault();Vol.set({level:Vol.level+(e.key==='0'?5:-5)});});
+document.addEventListener('keydown',e=>{if((e.key!=='9'&&e.key!=='0')||e.ctrlKey||e.metaKey||e.altKey||e.defaultPrevented||['INPUT','TEXTAREA'].includes(e.target.tagName))return;e.preventDefault();Vol.set({level:Vol.level+(e.key==='0'?5:-5)},true);});
 // Keys shared by both sliders: arrows step (Shift for 10), Page keys 10, Home/End the ends, M mutes.
 function volumeKey(e,step){const k=e.key;if(e.shiftKey)step=10;let level=null;
  if(k==='ArrowUp'||k==='ArrowRight')level=Vol.level+step;else if(k==='ArrowDown'||k==='ArrowLeft')level=Vol.level-step;else if(k==='PageUp')level=Vol.level+10;else if(k==='PageDown')level=Vol.level-10;else if(k==='Home')level=0;else if(k==='End')level=VOL_MAX;else if(k.toLowerCase()!=='m')return false;
- e.preventDefault();e.stopPropagation();Vol.set(level===null?{muted:!Vol.muted}:{level});return true;}
+ e.preventDefault();e.stopPropagation();Vol.set(level===null?{muted:!Vol.muted}:{level},true);return true;}
 // Scrolling a volume control: vertical only (sideways reaches the page), and small trackpad deltas add
 // up, so a wheel notch is 2 steps however many events it arrives in. Returns the steps, or null to ignore.
 const wheelSteps=()=>{let acc=0;return e=>{if(Math.abs(e.deltaY)<=Math.abs(e.deltaX))return null;e.preventDefault();acc+=e.deltaMode===1?e.deltaY*33:e.deltaY;const steps=Math.trunc(acc/50);acc-=steps*50;return steps;};};
@@ -280,9 +284,9 @@ const wheelSteps=()=>{let acc=0;return e=>{if(Math.abs(e.deltaY)<=Math.abs(e.del
 function orbital(root){
  const arc=root.querySelector('.orb-arc'),hit=root.querySelector('.orb-hit'),label=root.querySelector('.orb-label'),value=root.querySelector('.orb-value'),ticks=root.querySelector('.orb-ticks'),wheel=wheelSteps();let adjustTimer=0,last=null,pinned=null,down=false,pid=null;
  for(let i=0;i<VOL_MAX/10;i++){const a=(i*3600/VOL_MAX-90)*Math.PI/180,line=document.createElementNS('http://www.w3.org/2000/svg','line');for(const [k,v] of [['x1',50+40.5*Math.cos(a)],['y1',50+40.5*Math.sin(a)],['x2',50+46.5*Math.cos(a)],['y2',50+46.5*Math.sin(a)]])line.setAttribute(k,v.toFixed(2));ticks.append(line);}
- const readout=()=>{const adjusting=root.classList.contains('adjusting');label.textContent=adjusting?'Vol':'';value.textContent=adjusting?(Vol.muted?'MUTED':Vol.level):(Vol.muted?'MUTED':'SPEAKING');};
+ const readout=()=>{const adjusting=root.classList.contains('adjusting');label.textContent=adjusting?'Vol':'';value.textContent=adjusting?(Vol.muted?'MUTED':Math.round(Vol.shown)):(Vol.muted?'MUTED':'SPEAKING');};
  const adjust=patch=>{if(patch)Vol.set(patch);root.classList.add('adjusting');readout();clearTimeout(adjustTimer);adjustTimer=setTimeout(()=>{root.classList.remove('adjusting');readout();},1100);};
- Vol.views.push({render(){const f=Math.round(Vol.level/VOL_MAX*10000)/100;arc.setAttribute('stroke-dasharray',f+' '+Math.round((100-f)*100)/100);root.classList.toggle('speaking',Vol.speaking);root.classList.toggle('muted',Vol.muted);hit.setAttribute('aria-valuenow',Vol.level);hit.setAttribute('aria-valuetext',volText());readout();}});
+ Vol.views.push({render(){const f=Math.round(Vol.shown/VOL_MAX*10000)/100;arc.setAttribute('stroke-dasharray',f+' '+Math.round((100-f)*100)/100);root.classList.toggle('speaking',Vol.speaking);root.classList.toggle('muted',Vol.muted);hit.setAttribute('aria-valuenow',Vol.level);hit.setAttribute('aria-valuetext',volText());readout();}});
  // 0 at the top, clockwise, a full turn to the top of the range. A drag across the top stops at 0 or the top instead of jumping to the other end.
  const at=e=>{const r=root.getBoundingClientRect(),x=e.clientX-r.left-r.width/2,y=e.clientY-r.top-r.height/2;if(Math.hypot(x,y)<r.width*.18)return null;let deg=Math.atan2(y,x)*180/Math.PI+90;if(deg<0)deg+=360;return Math.round(deg/360*VOL_MAX);};
  // One drag at a time, from the primary button or the first finger: each press gets exactly one release,
@@ -301,11 +305,11 @@ function strip(root){
  const glyph=root.querySelector('.vol-glyph'),opener=root.querySelector('.vol-open'),number=root.querySelector('.vol-number'),mini=[...root.querySelectorAll('.vol-mini i')],panel=root.querySelector('.vol-strip'),bars=root.querySelector('.vol-bars'),handle=root.querySelector('.vol-handle'),tip=root.querySelector('.vol-tip');let open=false,idle=0,drag=false,pid=null,glyphMuted=null;
  for(let i=0;i<22;i++){const bar=document.createElement('i');bar.className='vol-bar';bar.style.height=(9+Math.abs(Math.sin(i*12.9898+4.15)*43758.5453)%1*23|0)+'px';bars.insertBefore(bar,handle);}
  const all=[...bars.querySelectorAll('.vol-bar')];
- Vol.views.push({render(){const shown=Vol.muted?0:Vol.level;number.textContent=!Vol.known?'—':Vol.muted?'Off':Vol.level;
+ Vol.views.push({render(){const shown=Vol.muted?0:Vol.shown,num=Math.round(Vol.shown);number.textContent=!Vol.known?'—':Vol.muted?'Off':num;
   if(glyphMuted!==Vol.muted){glyphMuted=Vol.muted;glyph.innerHTML=Vol.muted?VOL_MUTED_SVG:VOL_SPEAKER_SVG;glyph.setAttribute('aria-pressed',String(Vol.muted));glyph.setAttribute('aria-label',Vol.muted?'Unmute speech':'Mute speech');}
   opener.setAttribute('aria-label','Speech volume, '+(Vol.muted?'muted':Vol.level+' percent'));bars.setAttribute('aria-valuenow',Vol.level);bars.setAttribute('aria-valuetext',volText());
   all.forEach((bar,i)=>bar.classList.toggle('lit',i<Math.round(shown/VOL_MAX*all.length)));mini.forEach((bar,i)=>bar.classList.toggle('lit',i<Math.round(shown/VOL_MAX*mini.length)));
-  const pct=Math.round(shown/VOL_MAX*10000)/100;handle.style.left=pct+'%';tip.style.transform='translateX(-'+pct+'%)';tip.textContent=Vol.muted?'MUTED':'VOL '+Vol.level;root.classList.toggle('muted',Vol.muted);root.classList.toggle('speaking',Vol.speaking);}});
+  const pct=Math.round(shown/VOL_MAX*10000)/100;handle.style.left=pct+'%';tip.style.transform='translateX(-'+pct+'%)';tip.textContent=Vol.muted?'MUTED':'VOL '+num;root.classList.toggle('muted',Vol.muted);root.classList.toggle('speaking',Vol.speaking);}});
  const wake=()=>{clearTimeout(idle);idle=setTimeout(()=>drag?wake():close(),4000);};
  const outside=e=>{if(!root.contains(e.target))close();};
  const onKey=e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();opener.focus();}};
