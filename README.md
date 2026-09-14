@@ -61,9 +61,13 @@ Dashboard restarts separately: `systemctl --user restart home-control-dashboard`
 - Verified only on the tested chain above
 - Linux + systemd user services only
 - Phone page loads jsdelivr + Google Fonts, not vendored — needs internet
-- Agent unsandboxed under `VOICE_ROOT`, minus a deny list (`secrets/`, `credentials*`, `.env*`).
-  Read-only tools run freely; anything else (edits included) waits for Allow/Deny on the phone
-  (confirm button: PermissionRequest hook → `/api/permission`; no open page or 120 s → deny)
+- Agent unsandboxed under `VOICE_ROOT`, minus deny rules (`secrets/`, `credentials*`, `.env*`, and
+  the app's own + external credential files by absolute path). A PreToolUse hook (`pretool.mjs`)
+  gates every tool: read-only tools and a small Bash whitelist run freely; anything else — edits,
+  other shell commands, MCP writes, a tool a skill just granted — waits for Allow/Deny on the phone
+  (confirm button: PermissionRequest hook → `/api/permission`; no open page or 120 s → deny). The
+  gate fails closed on a crash (`|| exit 2`), but a PreToolUse hook *timeout* fails open — a known
+  gap, unreachable in practice since the local check runs in ~30 ms. A real sandbox would close it.
 - Passphrase-only auth, on top of the tailnet
 - Traffic goes to whatever providers are configured — local by default, remote if pointed there
 

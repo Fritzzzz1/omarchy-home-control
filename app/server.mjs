@@ -59,6 +59,20 @@ const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // command to the card even when it would have been auto-approved. The check lives in pretool.mjs,
 // run as a LOCAL command hook (below) so it has no server dependency and fails closed.
 const PRETOOL_SCRIPT = path.join(HERE, 'pretool.mjs');
+// The read-only tools that may run without a card, handed to pretool.mjs so it can defer them while
+// carding everything else (Edit/Write, MCP writes, a tool a skill just granted). Bash is not here —
+// pretool.mjs whitelists it by command. Written to a 0600 file at spawn (below).
+const PRETOOL_ALLOW_FILE = path.join(STATE, 'pretool-allow.json');
+// Credential files outside the app, denied to the Read/Edit/Write tools by absolute path (`//`).
+// Bash can't reach them either (a reader is non-whitelisted -> card). Listed even if absent today.
+const HOME = os.homedir();
+const EXTERNAL_SECRETS = [
+  '.claude/.credentials.json', '.claude/.credentials*',
+  '.config/gh/hosts.yml', '.config/home-control/config.env',
+  '.netrc', '.git-credentials', '.npmrc', '.pypirc', '.docker/config.json',
+].map((f) => `/${path.join(HOME, f)}`).concat([
+  `/${path.join(HOME, '.ssh')}/**`, `/${path.join(HOME, '.local/share/keyrings')}/**`, `/${path.join(HOME, '.aws')}/**`, `/${path.join(HOME, '.gnupg')}/**`,
+]);
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Skill',
   // No Bash entries: the PreToolUse whitelist hook (pretool.mjs) governs every Bash call instead.
@@ -89,24 +103,31 @@ const writePermissionSettings = () => {
         'Read(./**/secrets/**)', 'Read(./**/credentials*)', 'Read(./**/.env*)',
         'Edit(./**/secrets/**)', 'Edit(./**/credentials*)', 'Edit(./**/.env*)',
         'Write(./**/secrets/**)', 'Write(./**/credentials*)', 'Write(./**/.env*)',
-        ...['Read', 'Edit', 'Write'].flatMap((t) => APP_SECRETS.map((f) => `${t}(${f})`)),
+        ...['Read', 'Edit', 'Write'].flatMap((t) => [...APP_SECRETS, ...EXTERNAL_SECRETS].map((f) => `${t}(${f})`)),
       ],
     },
     hooks: {
-      // PreToolUse gates every Bash call: whitelisted -> allow, else -> ask (the card). It runs
+      // PreToolUse gates EVERY tool (matcher "*"), so a skill's allowed-tools grant can't skip the
+      // card: Bash by the whitelist, the read-only tools deferred, everything else -> ask. It runs
       // before Claude Code's built-in read-only auto-approve, so `cat`/`grep -r` reach the card too.
       // A LOCAL command hook (no server round-trip): pretool.mjs prints the decision, and `|| exit 2`
       // turns any failure to even run it into a PreToolUse block — so it fails closed, never open.
-      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `'${process.execPath}' '${PRETOOL_SCRIPT}' || exit 2`, timeout: 10 }] }],
+      // (A hook that *times out* is the one gap: Claude Code cancels it with no decision and the
+      // normal flow resumes; a ~30 ms local script never approaches the 60 s limit.)
+      PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: `'${process.execPath}' '${PRETOOL_SCRIPT}' '${PRETOOL_ALLOW_FILE}' || exit 2`, timeout: 60 }] }],
       PermissionRequest: [{ matcher: '*', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/permission?t=${HOOK_TOKEN}`, timeout: (CONFIRM_TIMEOUT_MS / 1000) * (CONFIRM_QUEUE_MAX + 1) + 60 }] }],
     },
   };
   fs.mkdirSync(STATE, { recursive: true });
   fs.rmSync(PERMISSION_SETTINGS_FILE, { force: true });   // created fresh, so the 0600 below always applies
   fs.writeFileSync(PERMISSION_SETTINGS_FILE, JSON.stringify(settings), { mode: 0o600 });
+  // The read-only tool set pretool.mjs defers. No Bash here (it whitelists by command). Todo* are
+  // added in the script's own core set.
+  fs.rmSync(PRETOOL_ALLOW_FILE, { force: true });
+  fs.writeFileSync(PRETOOL_ALLOW_FILE, JSON.stringify(ALLOWED_TOOLS), { mode: 0o600 });
 };
 writePermissionSettings();
-process.on('exit', () => { try { fs.rmSync(PERMISSION_SETTINGS_FILE, { force: true }); } catch {} });
+process.on('exit', () => { try { fs.rmSync(PERMISSION_SETTINGS_FILE, { force: true }); fs.rmSync(PRETOOL_ALLOW_FILE, { force: true }); } catch {} });
 
 fs.mkdirSync(AUDIO_DIR, { recursive: true });
 
