@@ -264,6 +264,8 @@ const Vol={level:100,muted:false,known:false,speaking:false,views:[],dragging:0,
 };
 const volText=()=>(Vol.muted?'Muted, ':'')+Vol.level+' percent';
 const VOL_SPEAKER_SVG='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.3 8.7a5 5 0 0 1 0 6.6"/><path d="M19 6a8.7 8.7 0 0 1 0 12"/></svg>',VOL_MUTED_SVG='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
+// 9 and 0 turn speech down and up from anywhere on the page, the same keys mpv uses; the focused ring and pill keep their arrow keys.
+document.addEventListener('keydown',e=>{if((e.key!=='9'&&e.key!=='0')||e.ctrlKey||e.metaKey||e.altKey||e.defaultPrevented||['INPUT','TEXTAREA'].includes(e.target.tagName))return;e.preventDefault();Vol.set({level:Vol.level+(e.key==='0'?5:-5)});});
 // Keys shared by both sliders: arrows step (Shift for 10), Page keys 10, Home/End the ends, M mutes.
 function volumeKey(e,step){const k=e.key;if(e.shiftKey)step=10;let level=null;
  if(k==='ArrowUp'||k==='ArrowRight')level=Vol.level+step;else if(k==='ArrowDown'||k==='ArrowLeft')level=Vol.level-step;else if(k==='PageUp')level=Vol.level+10;else if(k==='PageDown')level=Vol.level-10;else if(k==='Home')level=0;else if(k==='End')level=100;else if(k.toLowerCase()!=='m')return false;
