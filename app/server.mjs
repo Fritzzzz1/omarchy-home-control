@@ -53,35 +53,15 @@ const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // on (below). Everything else (file edits, other shell commands) goes to the confirm button:
 // claude's PermissionRequest hook posts to /api/permission (below), the phone shows Allow/Deny,
 // and the answer goes back to claude. Secrets stay denied outright (PERMISSION_SETTINGS_FILE).
-// Bash is gated by a whitelist in a PreToolUse hook (/api/pretool below), not by --allowedTools:
-// Claude Code auto-approves "read-only" commands (cat, grep, ...) on its own without ever firing
-// the PermissionRequest hook, so an allow/deny list can't reach them. A PreToolUse hook runs first
-// and its `ask` forces the command to the card even when it would have been auto-approved. So a
-// command that isn't a plain, metacharacter-free member of this list goes to the phone — that
-// covers /bin/cat, `sh -c ...`, env, python -c and anything we didn't foresee, which a denylist
-// never could. The agent reads files with the Read/Grep/Glob tools, which honour the secret-file
-// rules. Metacharacters (chaining, redirects, subshells, globs) disqualify a command outright, so
-// a whitelisted head can't be turned into `ls; cat secret` or `ls $(cat secret)`.
-const BASH_METACHAR = /[;&|<>`$(){}\[\]*?~!\n\\]/;
-const BASH_WHITELIST = [
-  /^ls(?: +-[A-Za-z]+)*(?: +[\w./@:+=-]+)*$/,
-  /^git status(?: +[\w./@:+=-]+)*$/,
-  /^systemctl(?: --user)? (?:status|is-active|is-enabled|is-failed)(?: +[\w.@:_-]+)*$/,
-  /^ps(?: +-{0,2}[\w,=+-]+)*$/,
-  /^top -b ?-?n ?1(?: +.*)?$/,
-  /^(?:df|free|uptime|date|whoami|hostname|id)(?: +-[A-Za-z]+)*$/,
-  /^ip -br (?:addr|a|link|neigh)$/,
-  /^tailscale status$/,
-  /^pacman -Q(?:q|qe|i|e)?$/,
-];
-const bashAllowed = (cmd) => {
-  cmd = String(cmd || '').trim();
-  if (!cmd || BASH_METACHAR.test(cmd)) return false;
-  return BASH_WHITELIST.some((re) => re.test(cmd));
-};
+// Bash is gated by a PreToolUse hook, not by --allowedTools: Claude Code auto-approves "read-only"
+// commands (cat, grep, ...) on its own without ever firing the PermissionRequest hook, so an
+// allow/deny list can't reach them, but a PreToolUse hook runs first and its `ask` forces the
+// command to the card even when it would have been auto-approved. The check lives in pretool.mjs,
+// run as a LOCAL command hook (below) so it has no server dependency and fails closed.
+const PRETOOL_SCRIPT = path.join(HERE, 'pretool.mjs');
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Skill',
-  // No Bash entries: the PreToolUse whitelist hook (/api/pretool) governs every Bash call instead.
+  // No Bash entries: the PreToolUse whitelist hook (pretool.mjs) governs every Bash call instead.
 ];
 // Handing work to another live Claude Code session on this machine. Opt-in (install.sh), because
 // it widens who can act on a spoken request. With it on, both tools run without a tap (relay mode
@@ -115,7 +95,9 @@ const writePermissionSettings = () => {
     hooks: {
       // PreToolUse gates every Bash call: whitelisted -> allow, else -> ask (the card). It runs
       // before Claude Code's built-in read-only auto-approve, so `cat`/`grep -r` reach the card too.
-      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/pretool?t=${HOOK_TOKEN}`, timeout: 20 }] }],
+      // A LOCAL command hook (no server round-trip): pretool.mjs prints the decision, and `|| exit 2`
+      // turns any failure to even run it into a PreToolUse block — so it fails closed, never open.
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `'${process.execPath}' '${PRETOOL_SCRIPT}' || exit 2`, timeout: 10 }] }],
       PermissionRequest: [{ matcher: '*', hooks: [{ type: 'http', url: `http://127.0.0.1:${PORT}/api/permission?t=${HOOK_TOKEN}`, timeout: (CONFIRM_TIMEOUT_MS / 1000) * (CONFIRM_QUEUE_MAX + 1) + 60 }] }],
     },
   };
@@ -797,16 +779,6 @@ const hookAuthed = (req) => {
   const want = Buffer.from(HOOK_TOKEN);
   return isLocalCaller(req) && t.length === want.length && crypto.timingSafeEqual(t, want);
 };
-// PreToolUse on Bash: a whitelisted, metacharacter-free command is allowed to run; everything else
-// is sent to the card. `ask` overrides Claude Code's built-in read-only auto-approve.
-const handlePreTool = async (req, res) => {
-  if (!hookAuthed(req)) { log(`pretool: refused a non-local caller (${clientIp(req)})`); return json(res, 403, { error: 'forbidden' }); }
-  const body = readJsonBody((await readBody(req, 20e6)).toString('utf8'));
-  const cmd = body.tool_name === 'Bash' ? (body.tool_input || {}).command : null;
-  const decision = body.tool_name === 'Bash' && bashAllowed(cmd) ? 'allow' : 'ask';
-  if (decision === 'ask') log(`pretool: ask -> card for ${String(cmd ?? body.tool_name).slice(0, 80)}`);
-  return json(res, 200, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision } });
-};
 const handlePermission = async (req, res) => {
   if (!hookAuthed(req)) {
     log(`permission: refused a caller that is not the local agent (${clientIp(req)})`);
@@ -930,7 +902,6 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   try {
     // Before the login gate: claude's hook has no cookie. handlePermission checks caller + token.
-    if (url.pathname === '/api/pretool' && req.method === 'POST') return handlePreTool(req, res);
     if (url.pathname === '/api/permission' && req.method === 'POST') return handlePermission(req, res);
     if (url.pathname === '/login' && req.method === 'POST') {
       const body = (await readBody(req)).toString('utf8');
