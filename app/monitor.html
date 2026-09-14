@@ -254,7 +254,9 @@ $('freeze').onclick=()=>{frozen=!frozen;$('freeze').textContent=frozen?'Resume f
 const Vol={level:100,muted:false,known:false,speaking:false,views:[],dragging:0,pending:null,sending:false,timer:0,holdUntil:0,
  render(){for(const view of this.views)view.render();},
  fromServer(v){if(!v||this.dragging||this.pending||this.sending||Date.now()<this.holdUntil)return;if(this.known&&v.level===this.level&&v.muted===this.muted)return;this.level=v.level;this.muted=v.muted;this.known=true;this.render();},
- set(patch){if('level' in patch){patch.level=Math.round(Math.min(100,Math.max(0,patch.level)));if(this.muted&&patch.level>0)patch.muted=false;}if(patch.level===this.level&&(patch.muted??this.muted)===this.muted)return;Object.assign(this,patch);this.known=true;this.pending={...this.pending,...patch};this.holdUntil=Date.now()+1500;this.render();if(!this.timer)this.timer=setTimeout(()=>this.flush(),150);},
+ // Nothing to change until the server's level has arrived: a relative step from the placeholder 100 could make speech loud.
+ // Turning up (or dragging, which aims at a spot) unmutes; turning down while muted only moves the level, quietly.
+ set(patch){if(!this.known)return;if('level' in patch){patch.level=Math.round(Math.min(100,Math.max(0,patch.level)));if(this.muted&&patch.level>0&&(patch.level>this.level||this.dragging))patch.muted=false;}if(patch.level===this.level&&(patch.muted??this.muted)===this.muted)return;Object.assign(this,patch);this.known=true;this.pending={...this.pending,...patch};this.holdUntil=Date.now()+1500;this.render();if(!this.timer)this.timer=setTimeout(()=>this.flush(),150);},
  async flush(){this.timer=0;if(this.sending||!this.pending)return;const body=this.pending;this.pending=null;this.sending=true;
   try{const r=await fetch('/api/volume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(4000)});const v=await r.json();if(r.ok&&!this.pending&&!this.dragging){this.level=v.level;this.muted=v.muted;this.render();}}catch{}
   finally{this.sending=false;this.holdUntil=Date.now()+1500;if(this.pending)this.flush();}},
