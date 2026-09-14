@@ -152,7 +152,9 @@ http.createServer(async (req, res) => {
     // without a preflight this server never answers, and a browser always sends its Origin.
     const origin = req.headers.origin;
     if (!(req.headers['content-type'] || '').startsWith('application/json') || (origin && origin !== `http://${req.headers.host}`)) { res.writeHead(403); return res.end(); }
-    const { status, body } = await postVolume((await readBody(req, 4096)).toString('utf8'));
+    let raw;
+    try { raw = await readBody(req, 4096); } catch { if (!res.headersSent && !res.destroyed) res.writeHead(413); return res.end(); }
+    const { status, body } = await postVolume(raw.toString('utf8'));
     res.writeHead(status, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(body));
   }

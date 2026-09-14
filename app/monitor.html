@@ -272,25 +272,27 @@ const wheelSteps=()=>{let acc=0;return e=>{if(Math.abs(e.deltaY)<=Math.abs(e.del
 // Orbital: arc length is the level. The whole ring is the control: drag around it, or scroll over it.
 // Near the centre the angle means nothing, so a press there only shows the level until the pointer moves out.
 function orbital(root){
- const arc=root.querySelector('.orb-arc'),hit=root.querySelector('.orb-hit'),label=root.querySelector('.orb-label'),value=root.querySelector('.orb-value'),ticks=root.querySelector('.orb-ticks'),wheel=wheelSteps();let adjustTimer=0,last=null,pinned=null,down=false;
+ const arc=root.querySelector('.orb-arc'),hit=root.querySelector('.orb-hit'),label=root.querySelector('.orb-label'),value=root.querySelector('.orb-value'),ticks=root.querySelector('.orb-ticks'),wheel=wheelSteps();let adjustTimer=0,last=null,pinned=null,down=false,pid=null;
  for(let i=0;i<10;i++){const a=(i*36-90)*Math.PI/180,line=document.createElementNS('http://www.w3.org/2000/svg','line');for(const [k,v] of [['x1',50+40.5*Math.cos(a)],['y1',50+40.5*Math.sin(a)],['x2',50+46.5*Math.cos(a)],['y2',50+46.5*Math.sin(a)]])line.setAttribute(k,v.toFixed(2));ticks.append(line);}
  const readout=()=>{const adjusting=root.classList.contains('adjusting');label.textContent=adjusting?'Vol':'';value.textContent=adjusting?(Vol.muted?'MUTED':Vol.level):(Vol.muted?'MUTED':'SPEAKING');};
  const adjust=patch=>{if(patch)Vol.set(patch);root.classList.add('adjusting');readout();clearTimeout(adjustTimer);adjustTimer=setTimeout(()=>{root.classList.remove('adjusting');readout();},1100);};
  Vol.views.push({render(){arc.setAttribute('stroke-dasharray',Vol.level+' '+(100-Vol.level));root.classList.toggle('speaking',Vol.speaking);root.classList.toggle('muted',Vol.muted);hit.setAttribute('aria-valuenow',Vol.level);hit.setAttribute('aria-valuetext',volText());readout();}});
  // 0 at the top, clockwise. A drag across the top stops at 0 or 100 instead of jumping to the other end.
  const at=e=>{const r=root.getBoundingClientRect(),x=e.clientX-r.left-r.width/2,y=e.clientY-r.top-r.height/2;if(Math.hypot(x,y)<r.width*.18)return null;let deg=Math.atan2(y,x)*180/Math.PI+90;if(deg<0)deg+=360;return Math.round(deg/3.6);};
- hit.addEventListener('pointerdown',e=>{e.preventDefault();down=true;root.classList.add('dragging');Vol.dragging++;try{hit.setPointerCapture(e.pointerId);}catch{}pinned=null;last=at(e);adjust(last===null?null:{level:last});});
+ // One drag at a time, from the primary button or the first finger: each press gets exactly one release,
+ // so Vol.dragging can't stay above 0 (which would stop the page following the server's level).
+ hit.addEventListener('pointerdown',e=>{if(down||e.button!==0||!e.isPrimary)return;e.preventDefault();down=true;pid=e.pointerId;root.classList.add('dragging');Vol.dragging++;try{hit.setPointerCapture(e.pointerId);}catch{}pinned=null;last=at(e);adjust(last===null?null:{level:last});});
  // `last` is where the pointer really is. Passing over the top pins the level at 0 (counter-clockwise)
  // or 100 (clockwise) until the pointer crosses back; a drag through the centre, which has no angle, starts fresh.
- hit.addEventListener('pointermove',e=>{if(!down)return;const raw=at(e);if(raw===null){last=null;pinned=null;return;}if(last!==null){if(last<25&&raw>75)pinned=pinned===100?null:0;else if(last>75&&raw<25)pinned=pinned===0?null:100;}last=raw;adjust({level:pinned??raw});});
- for(const type of ['pointerup','pointercancel','lostpointercapture'])hit.addEventListener(type,()=>{if(down){down=false;last=null;Vol.dragging--;root.classList.remove('dragging');}});
+ hit.addEventListener('pointermove',e=>{if(!down||e.pointerId!==pid)return;const raw=at(e);if(raw===null){last=null;pinned=null;return;}if(last!==null){if(last<25&&raw>75)pinned=pinned===100?null:0;else if(last>75&&raw<25)pinned=pinned===0?null:100;}last=raw;adjust({level:pinned??raw});});
+ for(const type of ['pointerup','pointercancel','lostpointercapture'])hit.addEventListener(type,e=>{if(down&&e.pointerId===pid){down=false;last=null;Vol.dragging--;root.classList.remove('dragging');}});
  hit.addEventListener('wheel',e=>{const steps=wheel(e);if(steps)adjust({level:Vol.level-steps});},{passive:false});
  hit.addEventListener('keydown',e=>{if(volumeKey(e,2))adjust();});
  hit.addEventListener('focus',()=>root.classList.add('focused'));hit.addEventListener('blur',()=>root.classList.remove('focused'));
 }
 // Strip: a header pill (speaker toggles mute, the rest opens the slider). Closes on Escape, a click outside, or 4 s idle.
 function strip(root){
- const glyph=root.querySelector('.vol-glyph'),opener=root.querySelector('.vol-open'),number=root.querySelector('.vol-number'),mini=[...root.querySelectorAll('.vol-mini i')],panel=root.querySelector('.vol-strip'),bars=root.querySelector('.vol-bars'),handle=root.querySelector('.vol-handle'),tip=root.querySelector('.vol-tip');let open=false,idle=0,drag=false,glyphMuted=null;
+ const glyph=root.querySelector('.vol-glyph'),opener=root.querySelector('.vol-open'),number=root.querySelector('.vol-number'),mini=[...root.querySelectorAll('.vol-mini i')],panel=root.querySelector('.vol-strip'),bars=root.querySelector('.vol-bars'),handle=root.querySelector('.vol-handle'),tip=root.querySelector('.vol-tip');let open=false,idle=0,drag=false,pid=null,glyphMuted=null;
  for(let i=0;i<22;i++){const bar=document.createElement('i');bar.className='vol-bar';bar.style.height=(9+Math.abs(Math.sin(i*12.9898+4.15)*43758.5453)%1*23|0)+'px';bars.insertBefore(bar,handle);}
  const all=[...bars.querySelectorAll('.vol-bar')];
  Vol.views.push({render(){const shown=Vol.muted?0:Vol.level;number.textContent=!Vol.known?'—':Vol.muted?'Off':Vol.level;
@@ -306,9 +308,10 @@ function strip(root){
  opener.addEventListener('click',e=>open?close():show(e.detail===0));
  glyph.addEventListener('click',()=>{Vol.set({muted:!Vol.muted});if(open)wake();});
  const at=e=>{const r=bars.getBoundingClientRect();return (e.clientX-r.left)/r.width*100;};
- bars.addEventListener('pointerdown',e=>{drag=true;Vol.dragging++;try{bars.setPointerCapture(e.pointerId);}catch{}Vol.set({level:at(e)});wake();});
- bars.addEventListener('pointermove',e=>{if(drag){Vol.set({level:at(e)});wake();}});
- for(const type of ['pointerup','pointercancel','lostpointercapture'])bars.addEventListener(type,()=>{if(drag){drag=false;Vol.dragging--;}});
+ // Same rule as the ring: one drag at a time, primary button or first finger only.
+ bars.addEventListener('pointerdown',e=>{if(drag||e.button!==0||!e.isPrimary)return;drag=true;pid=e.pointerId;Vol.dragging++;try{bars.setPointerCapture(e.pointerId);}catch{}Vol.set({level:at(e)});wake();});
+ bars.addEventListener('pointermove',e=>{if(drag&&e.pointerId===pid){Vol.set({level:at(e)});wake();}});
+ for(const type of ['pointerup','pointercancel','lostpointercapture'])bars.addEventListener(type,e=>{if(drag&&e.pointerId===pid){drag=false;Vol.dragging--;}});
  bars.addEventListener('keydown',e=>{if(volumeKey(e,1))wake();});
  const wheel=wheelSteps();
  root.addEventListener('wheel',e=>{const steps=wheel(e);if(steps===null)return;if(steps)Vol.set({level:Vol.level-steps});if(open)wake();},{passive:false});
