@@ -457,6 +457,11 @@ const VOLUME_FILE = path.join(STATE, 'volume.json');
 const clampLevel = (n) => Math.min(100, Math.max(0, Math.round(n)));
 let volume = (() => { const v = readJson(VOLUME_FILE, {}); return { level: Number.isFinite(v.level) ? clampLevel(v.level) : 100, muted: v.muted === true }; })();
 const playerVolume = () => (volume.muted ? 0 : volume.level);
+// Speech plays 1.5 dB above the file as generated, at every level. edge-tts peaks reach about
+// -2 dBFS at their loudest, so that is louder without clipping. mpv's volume is cubic
+// (gain = (v/100)^3), so scaling it by 10^(dB/60) adds the same dB at every level.
+const SPEECH_BOOST_DB = 1.5;
+const mpvVolume = () => Math.round(playerVolume() * 10 ** (SPEECH_BOOST_DB / 60) * 10) / 10;
 // Accepts level (0-100, clamped) and/or muted (a real boolean); anything else leaves it unchanged.
 const setVolume = (body) => {
   const next = { ...volume };
@@ -488,7 +493,7 @@ const applyLiveVolume = () => {
   sock.setTimeout(1000, () => sock.destroy());
   // Best effort: a player that is just starting or just exited simply misses this one change.
   sock.on('error', () => {});
-  sock.on('connect', () => sock.end(JSON.stringify({ command: ['set_property', 'volume', playerVolume()] }) + '\n'));
+  sock.on('connect', () => sock.end(JSON.stringify({ command: ['set_property', 'volume', mpvVolume()] }) + '\n'));
 };
 // Away mode: when true, replies are still sent to the phone as normal, but this machine's own
 // speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
@@ -525,7 +530,7 @@ const playLocally = (file, index = null, text = '') => {
     if (index !== null) nowPlaying = { index, text };
     const clear = () => { if (nowPlaying && nowPlaying.index === index) nowPlaying = null; };
     const tryFfplay = (origErr) => {
-      const fp = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(playerVolume()), ...(speechRate === 1 ? [] : ['-af', `atempo=${speechRate}`]), file], { stdio: 'ignore' });
+      const fp = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', '-volume', String(playerVolume()), '-af', [`volume=${SPEECH_BOOST_DB}dB`, ...(speechRate === 1 ? [] : [`atempo=${speechRate}`])].join(','), file], { stdio: 'ignore' });
       localChild = fp;
       localIpc = null;
       fp.on('error', (e) => { log(`local playback failed: no mpv or ffplay (${origErr?.message || e.message})`); localChild = null; clear(); resolve(); });
@@ -533,7 +538,7 @@ const playLocally = (file, index = null, text = '') => {
     };
     if (LOCAL_PLAYER === 'ffplay') { tryFfplay(); return; }
     removeMpvSocket();   // one left by a player that was killed would refuse connections
-    const child = spawn(LOCAL_PLAYER, ['--no-terminal', '--really-quiet', `--speed=${speechRate}`, `--volume=${playerVolume()}`, `--input-ipc-server=${MPV_SOCKET}`, file], { stdio: 'ignore' });
+    const child = spawn(LOCAL_PLAYER, ['--no-terminal', '--really-quiet', `--speed=${speechRate}`, `--volume=${mpvVolume()}`, `--input-ipc-server=${MPV_SOCKET}`, file], { stdio: 'ignore' });
     localChild = child;
     localIpc = MPV_SOCKET;
     child.on('error', (e) => { localIpc = null; tryFfplay(e); });
