@@ -53,14 +53,17 @@ const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // on (below). Everything else (file edits, other shell commands) goes to the confirm button:
 // claude's PermissionRequest hook posts to /api/permission (below), the phone shows Allow/Deny,
 // and the answer goes back to claude. Secrets stay denied outright (PERMISSION_SETTINGS_FILE).
-// Prefix rules (`cmd:*`) don't look at flags, so a command is listed only if none of its flags
-// writes a file, runs a program or leaks a secret. Removed for that reason: git fetch
-// (--upload-pack runs a program), git log/diff/show (--output writes), ffprobe (-o writes),
-// gh auth status (--show-token), gh pr * (--web launches a browser). They ask the phone instead.
+// Prefix rules (`cmd:*`) don't look at flags or arguments, so a command is listed only if it
+// takes no file path or glob (which would print a file's contents straight past the deny rules
+// below, e.g. `cat voice-tok*`, `grep -r . <state>`) AND no flag writes a file, runs a program or
+// leaks a secret. So: no cat/head/tail/grep/wc/du (read a file by path) — the Read/Grep/Glob tools
+// do those and honour the deny rules; no git fetch (--upload-pack runs a program), git log/diff/
+// show (--output writes), ffprobe (-o writes), gh auth status (--show-token), gh pr * (--web opens
+// a browser). What's left reports machine/process state and can't be pointed at a file.
 const READ_ONLY_BASH = [
   'git status',
-  'date', 'ls', 'cat', 'head', 'tail', 'wc', 'grep',
-  'ps', 'top -b -n 1', 'top -bn1', 'free', 'which', 'uptime', 'df', 'du', 'lspci', 'lsmod',
+  'date', 'ls',
+  'ps', 'top -b -n 1', 'top -bn1', 'free', 'which', 'uptime', 'df', 'lspci', 'lsmod',
   'pacman -Q', 'pacman -Qq', 'pacman -Qqe', 'pacman -Qi',
   'systemctl status', 'systemctl --user status', 'systemctl is-active', 'systemctl --user is-active',
 ];
@@ -90,6 +93,21 @@ const PERMISSION_SETTINGS_FILE = path.join(STATE, 'claude-settings.json');
 // cookies, the passphrase, the hook token, the session pointer. The rest of the state dir stays
 // reachable on purpose: the agent switches away mode by writing away.json there.
 const APP_SECRETS = [SESSIONS_FILE, TOKEN_FILE, PERMISSION_SETTINGS_FILE, CLAUDE_SESSION_FILE].map((f) => `/${path.resolve(f)}`);
+// File-reading shell commands. Claude Code auto-approves them as "read-only" without firing the
+// PermissionRequest hook, so leaving them out of the allowlist is not enough — a Bash deny rule is
+// the only thing that stops them (verified). Denied so a glob or a recursive read can't print a
+// secret past the per-file rules above (cat voice-tok*, grep -r <state>). The agent reads project
+// files with the Read/Grep/Glob tools instead, which honour the per-file deny rules.
+const SECRET_READERS = [
+  'cat', 'tac', 'nl', 'head', 'tail', 'more', 'less', 'view',
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack',
+  'sed', 'awk', 'gawk', 'mawk', 'cut', 'sort', 'uniq', 'comm', 'join', 'paste', 'column', 'fold', 'fmt', 'pr', 'expand', 'unexpand', 'rev', 'tr', 'look', 'csplit', 'split', 'shuf', 'tsort', 'ptx',
+  'od', 'xxd', 'hexdump', 'hd', 'strings', 'base64', 'base32', 'basenc', 'uuencode', 'cksum', 'md5sum', 'sha1sum', 'sha256sum', 'sha512sum', 'b2sum',
+  'jq', 'yq', 'xmllint', 'xmlstarlet',
+  'dd', 'pv', 'tee', 'stat', 'file', 'readlink', 'realpath', 'find', 'du', 'wc',
+  'diff', 'cmp', 'sdiff', 'vimdiff',
+  'vi', 'vim', 'nvim', 'nano', 'emacs', 'ed', 'ex',
+];
 const writePermissionSettings = () => {
   const settings = {
     permissions: {
@@ -98,6 +116,7 @@ const writePermissionSettings = () => {
         'Edit(./**/secrets/**)', 'Edit(./**/credentials*)', 'Edit(./**/.env*)',
         'Write(./**/secrets/**)', 'Write(./**/credentials*)', 'Write(./**/.env*)',
         ...['Read', 'Edit', 'Write'].flatMap((t) => APP_SECRETS.map((f) => `${t}(${f})`)),
+        ...SECRET_READERS.map((c) => `Bash(${c}:*)`),
       ],
     },
     hooks: {
