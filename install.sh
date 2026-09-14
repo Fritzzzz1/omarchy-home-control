@@ -290,6 +290,7 @@ VOICE_PWA_NAME=$PWA_NAME
 VOICE_EDGE_TTS=$VENV_DIR/bin/edge-tts
 
 # Default spoken language (transcription + TTS). Always written; default is English.
+# Removed or empty, a locally started whisper-server detects the language instead.
 VOICE_LANG=$VOICE_LANG
 
 # Reword long/formatted replies for speech via an extra model call before TTS.

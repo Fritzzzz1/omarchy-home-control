@@ -34,7 +34,8 @@ const TTS_PYTHON = process.env.HOME_CONTROL_TTS_PYTHON || 'python3';
 const MODEL = process.env.VOICE_MODEL || '';
 const EFFORT = process.env.VOICE_EFFORT || '';
 const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';
-const VOICE_LANG = (process.env.VOICE_LANG || 'en').trim().toLowerCase() || 'en';
+// Unset (a config.env written before this setting existed) keeps whisper's language detection.
+const VOICE_LANG = (process.env.VOICE_LANG || '').trim().toLowerCase() || 'auto';
 // Off means: a page-shaped reply is still de-markdowned (stripMarkdown), just not sent to
 // Haiku to be reworded for the ear first. That second call is real extra cost, not free
 // polish - asked about at install time. config.env must set VOICE_SPEECH_REWRITE=on|off
