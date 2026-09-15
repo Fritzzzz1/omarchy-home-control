@@ -56,12 +56,6 @@ home-control-ctl restart     # asks for confirmation; ends any live turn
 
 Dashboard restarts separately: `systemctl --user restart home-control-dashboard`.
 
-## Cross-session delegation (Claude Code only, as of 2026-09-09)
-
-`ListAgents`/`SendMessage`, gated by `VOICE_PEER_DELEGATION` in `config.env`. Setup asks,
-defaults to yes for Claude Code. Rule: missing tool → delegate; denied action → don't, goes back
-to the user.
-
 ## Limits
 
 - Verified only on the tested chain above

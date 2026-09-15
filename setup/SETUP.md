@@ -12,10 +12,6 @@ turn this into a manual checklist for the user.
 Already set up (`~/.config/home-control/config.env` exists)? Say so, and ask what they want to
 change instead of re-running everything below.
 
-Also check whether this app's own ports (voice server, transcription, TTS, dashboard) are
-already bound by something else. If one is, it's not a blocker — just pick a free port instead,
-or ask the user which port they'd prefer, and move on.
-
 If you're running on Omarchy, ask first whether they'd like a browser page open showing the
 setup steps as you go (`app/setup.html`, e.g. via `xdg-open`). Only open it if they say yes. It
 has no server behind it — as you finish each numbered step below, edit that step's
@@ -129,7 +125,9 @@ confirmed runtime differs from what they describe.
 
 Install the server, chosen client(s), both dashboards, rendered config, and systemd user
 services, using distinct configurable ports for the voice server, transcription, TTS, and
-dashboard. Use the agent folder chosen in §2 as `VOICE_ROOT`.
+dashboard. Check whether any of these ports is already taken; if so, pick a free one or ask the
+user, and write it into the config. A taken port is never a reason to stop. Use the agent folder
+chosen in §2 as `VOICE_ROOT`.
 
 Home Control runs from this clone — nothing is copied. Install writes only `config.env`, the
 systemd units, and two files git ignores (`app/voice-mode.md`, `app/manifest.json`). Updating

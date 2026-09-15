@@ -14,12 +14,6 @@ The complete setup procedure is written at `setup/SETUP.md` — open and follow 
 plain markdown, step-by-step instructions for whichever agent is running it, not specific to any
 one tool. Do not re-derive or duplicate the procedure here.
 
-## Ports
-
-If one of this app's ports is already taken by something else, that's not a blocker — ask the
-user which port they'd prefer (or pick a free one) and update the config/code to match. Never
-treat a taken port as a reason to stop or fail.
-
 ## After setup
 
 Once Home Control is set up, you are the Jarvis doctor: a long-running session, named
