@@ -76,6 +76,15 @@ body>header button{padding:7px 11px;min-height:36px}
 .setting-row+.setting-row{margin-top:18px}
 @keyframes pieceIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .flow-in{animation:pieceIn .5s ease-out both}
+/* Cancel chip: a small orange × at the far end of the status row while you're being recorded; a tap
+   drops what you're saying instead of sending it. Its tap area reaches past its edges. */
+#cancelRec{display:none;position:relative;flex:none;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:50%;border:1px solid #e8a06e40;background:#e8a06e12;color:#e8a06e}
+#cancelRec.show{display:inline-flex;animation:tipIn .2s ease-out}
+#cancelRec:before{content:'';position:absolute;inset:-8px -6px}
+#cancelRec svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round}
+#cancelRec:hover{background:#e8a06e20;filter:none}#cancelRec:active{background:#e8a06e2e}
+@media(max-width:899px){#top #modeText{min-width:0;flex:1}#cancelRec{margin-left:auto}}
+@media(min-width:900px){#top{position:relative}#cancelRec{position:absolute;right:28px;top:24px}}
 </style>
 </head>
 <body>
@@ -90,6 +99,7 @@ body>header button{padding:7px 11px;min-height:36px}
 <div id="top">
   <div class="orb-stage"><button id="orb" class="off" aria-label="Interrupt reply or resume audio"></button></div>
   <div id="modeText" role="status" aria-live="polite">Let’s talk.</div>
+  <button id="cancelRec" aria-label="Cancel recording" title="drop what you're saying instead of sending it"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></svg></button>
 </div>
 <div id="exchange" aria-label="Current conversation">
   <div id="heard" class="hidden" dir="auto"></div>
@@ -172,6 +182,7 @@ try { if (localStorage.getItem('voiceMode') === 'manual') voiceMode = 'manual'; 
 const listeningLabel = () => (voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');   // shown on the orb whenever the mic goes live
 let dictating = false, dictateFrames = [];   // manual mode: raw 16kHz frames buffered between orb taps
 let speechOpen = false;   // auto mode: an utterance the VAD started while the mic was live
+let discardSpeech = false;   // the Cancel chip was tapped: the utterance that ends next is dropped, not sent
 let textFlow = 'instant';   // 'instant' (default) or 'flowing'
 try { if (localStorage.getItem('textFlow') === 'flowing') textFlow = 'flowing'; } catch {}
 // Playback speed is applied on this phone, not in the TTS: it takes effect on the sentence already
@@ -200,6 +211,7 @@ const nextStep = () => {
 const setMode = (cls, text) => {
   orb.className = cls; modeText.textContent = heldAudio && (cls === 'listening' || cls === 'off') ? HELD_LABEL : text;
   const step = nextStep(); if (step) hint.textContent = step;
+  $('cancelRec').classList.toggle('show', on && !busy && !muted && (voiceMode === 'manual' ? dictating : speechOpen));
   const speaking = cls === 'speaking';
   $('pause').classList.toggle('hidden', !speaking); $('skip').classList.toggle('hidden', !speaking); $('pause').disabled = !speaking; $('skip').disabled = !speaking; reply.classList.toggle('speaking', speaking);
   if (!speaking) setPaused(false);
@@ -270,7 +282,7 @@ async function startEar() {
     // In manual mode, nothing reacts to sound until the orb is tapped to start dictating — an
     // untapped orb that still says "Hearing you" and pulses looks like it's capturing when it
     // isn't, and a real utterance can be lost before anyone notices.
-    onSpeechStart: () => { if (busy || muted) { clientLog(`speech started while ${busy ? 'busy' : 'muted'}, not marked open`); return; } speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
+    onSpeechStart: () => { if (busy || muted) { clientLog(`speech started while ${busy ? 'busy' : 'muted'}, not marked open`); return; } discardSpeech = false; speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
     onFrameProcessed: (p, frame) => {
       frames++;
       if (busy || muted) return;
@@ -278,12 +290,13 @@ async function startEar() {
       orb.style.setProperty('--level', String(1 + Math.min(0.35, p.isSpeech * 0.4)));
       if (dictating && frame) dictateFrames.push(frame.slice());
     },
-    onVADMisfire: () => { speechOpen = false; if (muted) clientLog('mute: what was said was too short to send'); if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
+    onVADMisfire: () => { speechOpen = false; discardSpeech = false; if (muted) clientLog('mute: what was said was too short to send'); if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
     // Muting means "stop hearing me from now on", not "throw away what I just said": an utterance
     // that began while the mic was still live goes up even if the mute tap lands during the pause
     // before the VAD closes it. Stopping the session, or a turn already in flight, still drops it.
     onSpeechEnd: (audio) => {
       const wasLive = speechOpen; speechOpen = false;
+      if (discardSpeech) { discardSpeech = false; clientLog('cancel: speech dropped'); return; }
       if (!on || busy || voiceMode === 'manual') return;
       if (muted && !wasLive) { clientLog('mute: speech not sent, it began after the mute'); return; }
       if (muted) clientLog(`mute: sent ${(audio.length / 16000).toFixed(1)} s of speech`);
@@ -373,6 +386,23 @@ function flushDictate() {
   sendAudio(wavFromFloat32(merged));
   return true;
 }
+// The Cancel chip: drops what you're saying instead of sending it, and keeps listening. Auto mode ends
+// the utterance now (pausing the ear hands it to onSpeechEnd, which drops it because of discardSpeech);
+// manual mode throws the dictation buffer away.
+function cancelRecording() {
+  if (!on || busy) return;
+  if (voiceMode === 'manual') {
+    if (!dictating) return;
+    dictating = false; dictateFrames = []; clientLog('cancel: dictation dropped');
+    setMode('listening', listeningLabel()); modeText.textContent = 'Cancelled';
+    return;
+  }
+  if (!speechOpen) return;
+  holdEnd(); discardSpeech = true; speechOpen = false;
+  earOff(); earOn();
+  if (orb.className === 'listening') modeText.textContent = 'Cancelled — listening';
+}
+$('cancelRec').onclick = cancelRecording;
 
 // ---- the turn: audio (or typed text) up, transcript + text + sentence audio down
 async function sendAudio(blob) { await turn({ body: blob, headers: { 'Content-Type': 'audio/wav' } }); }
