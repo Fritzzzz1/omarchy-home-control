@@ -76,6 +76,15 @@ body>header button{padding:7px 11px;min-height:36px}
 .setting-row+.setting-row{margin-top:18px}
 @keyframes pieceIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .flow-in{animation:pieceIn .5s ease-out both}
+/* Cancel chip: a small orange × at the far end of the status row while you're being recorded; a tap
+   drops what you're saying instead of sending it. Its tap area reaches past its edges. */
+#cancelRec{display:none;position:relative;flex:none;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:50%;border:1px solid #e8a06e40;background:#e8a06e12;color:#e8a06e}
+#cancelRec.show{display:inline-flex;animation:tipIn .2s ease-out}
+#cancelRec:before{content:'';position:absolute;inset:-8px -6px}
+#cancelRec svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round}
+#cancelRec:hover{background:#e8a06e20;filter:none}#cancelRec:active{background:#e8a06e2e}
+@media(max-width:899px){#top #modeText{min-width:0;flex:1}#cancelRec{margin-left:auto}}
+@media(min-width:900px){#top{position:relative}#cancelRec{position:absolute;right:28px;top:24px}}
 </style>
 </head>
 <body>
@@ -90,6 +99,7 @@ body>header button{padding:7px 11px;min-height:36px}
 <div id="top">
   <div class="orb-stage"><button id="orb" class="off" aria-label="Interrupt reply or resume audio"></button></div>
   <div id="modeText" role="status" aria-live="polite">Let’s talk.</div>
+  <button id="cancelRec" aria-label="Cancel recording" title="drop what you're saying instead of sending it"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></svg></button>
 </div>
 <div id="exchange" aria-label="Current conversation">
   <div id="heard" class="hidden" dir="auto"></div>
@@ -162,11 +172,17 @@ const IDLE_END_MS = 10 * 60 * 1000;   // no speech for this long ends the conver
 
 let on = false, busy = false, muted = false, earMuted = false, vad = null, unlocked = false, wakeLock = null;
 let queue = [], playing = false, currentTurn = 0, paused = false, nowSpan = null, idleTimer = null;
+// A reply iOS refused to play (it wants a tap): its remaining sentences wait here for a tap on the orb.
+// Nothing else waits for them — the page carries on as if that reply had finished.
+let heldAudio = null;
+const HELD_LABEL = 'Tap the orb to hear the reply';
+const STOPPED_LABEL = 'Let’s talk.';   // after Stop, the same as a fresh page; 'Paused' is only for a held mute or a paused reply
 let voiceMode = 'auto';   // 'auto' (default) or 'manual'
 try { if (localStorage.getItem('voiceMode') === 'manual') voiceMode = 'manual'; } catch {}
 const listeningLabel = () => (voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');   // shown on the orb whenever the mic goes live
 let dictating = false, dictateFrames = [];   // manual mode: raw 16kHz frames buffered between orb taps
 let speechOpen = false;   // auto mode: an utterance the VAD started while the mic was live
+let discardSpeech = false;   // the Cancel chip was tapped: the utterance that ends next is dropped, not sent
 let textFlow = 'instant';   // 'instant' (default) or 'flowing'
 try { if (localStorage.getItem('textFlow') === 'flowing') textFlow = 'flowing'; } catch {}
 // Playback speed is applied on this phone, not in the TTS: it takes effect on the sentence already
@@ -193,8 +209,9 @@ const nextStep = () => {
   return 'Listening. Go ahead and talk.';
 };
 const setMode = (cls, text) => {
-  orb.className = cls; modeText.textContent = text;
+  orb.className = cls; modeText.textContent = heldAudio && (cls === 'listening' || cls === 'off') ? HELD_LABEL : text;
   const step = nextStep(); if (step) hint.textContent = step;
+  $('cancelRec').classList.toggle('show', on && !busy && !muted && (voiceMode === 'manual' ? dictating : speechOpen));
   const speaking = cls === 'speaking';
   $('pause').classList.toggle('hidden', !speaking); $('skip').classList.toggle('hidden', !speaking); $('pause').disabled = !speaking; $('skip').disabled = !speaking; reply.classList.toggle('speaking', speaking);
   if (!speaking) setPaused(false);
@@ -265,7 +282,7 @@ async function startEar() {
     // In manual mode, nothing reacts to sound until the orb is tapped to start dictating — an
     // untapped orb that still says "Hearing you" and pulses looks like it's capturing when it
     // isn't, and a real utterance can be lost before anyone notices.
-    onSpeechStart: () => { if (busy || muted) { clientLog(`speech started while ${busy ? 'busy' : 'muted'}, not marked open`); return; } speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
+    onSpeechStart: () => { if (busy || muted) { clientLog(`speech started while ${busy ? 'busy' : 'muted'}, not marked open`); return; } discardSpeech = false; speechOpen = true; touch(); if (voiceMode === 'manual') return; setMode('listening', 'Hearing you'); },
     onFrameProcessed: (p, frame) => {
       frames++;
       if (busy || muted) return;
@@ -273,12 +290,13 @@ async function startEar() {
       orb.style.setProperty('--level', String(1 + Math.min(0.35, p.isSpeech * 0.4)));
       if (dictating && frame) dictateFrames.push(frame.slice());
     },
-    onVADMisfire: () => { speechOpen = false; if (muted) clientLog('mute: what was said was too short to send'); if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
+    onVADMisfire: () => { speechOpen = false; discardSpeech = false; if (muted) clientLog('mute: what was said was too short to send'); if (busy || muted || voiceMode === 'manual') return; setMode('listening', 'Listening'); },
     // Muting means "stop hearing me from now on", not "throw away what I just said": an utterance
     // that began while the mic was still live goes up even if the mute tap lands during the pause
     // before the VAD closes it. Stopping the session, or a turn already in flight, still drops it.
     onSpeechEnd: (audio) => {
       const wasLive = speechOpen; speechOpen = false;
+      if (discardSpeech) { discardSpeech = false; clientLog('cancel: speech dropped'); return; }
       if (!on || busy || voiceMode === 'manual') return;
       if (muted && !wasLive) { clientLog('mute: speech not sent, it began after the mute'); return; }
       if (muted) clientLog(`mute: sent ${(audio.length / 16000).toFixed(1)} s of speech`);
@@ -368,6 +386,23 @@ function flushDictate() {
   sendAudio(wavFromFloat32(merged));
   return true;
 }
+// The Cancel chip: drops what you're saying instead of sending it, and keeps listening. Auto mode ends
+// the utterance now (pausing the ear hands it to onSpeechEnd, which drops it because of discardSpeech);
+// manual mode throws the dictation buffer away.
+function cancelRecording() {
+  if (!on || busy) return;
+  if (voiceMode === 'manual') {
+    if (!dictating) return;
+    dictating = false; dictateFrames = []; clientLog('cancel: dictation dropped');
+    setMode('listening', listeningLabel()); modeText.textContent = 'Cancelled';
+    return;
+  }
+  if (!speechOpen) return;
+  holdEnd(); discardSpeech = true; speechOpen = false;
+  earOff(); earOn();
+  if (orb.className === 'listening') modeText.textContent = 'Cancelled — listening';
+}
+$('cancelRec').onclick = cancelRecording;
 
 // ---- the turn: audio (or typed text) up, transcript + text + sentence audio down
 async function sendAudio(blob) { await turn({ body: blob, headers: { 'Content-Type': 'audio/wav' } }); }
@@ -376,7 +411,7 @@ async function turn(init) {
   if (busy) return;
   busy = true; earOff(); unlock();
   const mine = ++currentTurn;
-  queue = []; nowSpan = null;
+  queue = []; nowSpan = null; heldAudio = null;
   setMode('thinking', init.headers['Content-Type'] === 'audio/wav' ? 'Heard you' : 'Thinking');
   const watchdog = new AbortController(); let quiet = null;
   const alive = () => { clearTimeout(quiet); quiet = setTimeout(() => watchdog.abort(), 180000); };
@@ -415,7 +450,7 @@ async function turn(init) {
     if (mine === currentTurn) {
       await whilePlaying();
       busy = false;
-      if (on) earOn(); else setMode('off', 'Paused');
+      if (on) earOn(); else setMode('off', STOPPED_LABEL);
       fetchStats();
     }
   }
@@ -426,24 +461,56 @@ for (const ev of ['loadedmetadata', 'canplay', 'play', 'playing']) player.addEve
 // One queue for every reply, ordered by when the server produced each sentence (its event id), so a
 // reply that had to wait still plays ahead of anything produced after it.
 const enqueue = (piece) => { const i = queue.findIndex((q) => q.id > piece.id); if (i < 0) queue.push(piece); else queue.splice(i, 0, piece); };
-// sentence audio plays in order as it arrives; the mic stays off until the last piece ends
+// Sentence audio plays in order as it arrives; the mic stays off until the last piece ends. Audio never
+// holds anything else up: a sentence has START_MS to begin, then a timer re-armed on every bit of
+// progress (sized to what is left of it) must not run out; one that fails either way is skipped. If iOS
+// refuses to play at all, the rest of the queue becomes heldAudio, played by a tap on the orb.
+const START_MS = 10000, STALL_GRACE_MS = 8000;
+let playToken = 0;   // one per sentence, bumped by interrupt() too, so events from an old sentence do nothing
 function playNext(mine) {
   if (playing || !queue.length || mine !== currentTurn) return;
   playing = true; setMode('speaking', 'Speaking');
-  const piece = queue.shift();
+  const piece = queue.shift(), token = ++playToken;
   if (nowSpan) { nowSpan.classList.remove('now'); nowSpan.classList.add('done'); }
   nowSpan = piece.span; nowSpan.classList.add('now'); nowSpan.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  let timer = null, settled = false, started = false;   // progress re-arms the timer only once playback has begun
+  const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => (paused ? arm(ms) : settle('stalled')), ms); };
+  const progress = () => { if (token !== playToken) return; const left = (player.duration - player.currentTime) / (player.playbackRate || 1); arm((Number.isFinite(left) ? left * 1000 : 60000) + STALL_GRACE_MS); };
+  const settle = (how) => {
+    if (settled || token !== playToken) return;
+    settled = true; clearTimeout(timer);
+    player.onended = player.onerror = player.onplaying = player.ontimeupdate = player.onratechange = null;
+    if (how !== 'ended') clientLog(`audio ${how}: piece ${piece.id}${how === 'refused' ? `, it and ${queue.length} more held for a tap` : ', skipped'}`);
+    if (how === 'refused') { player.pause(); heldAudio = [piece, ...queue]; queue = []; nowSpan.classList.remove('now'); nowSpan = null; }
+    playing = false;
+    if (!queue.length && nowSpan) { nowSpan.classList.remove('now'); nowSpan.classList.add('done'); nowSpan = null; }
+    playNext(mine);
+  };
+  player.onended = () => settle('ended'); player.onerror = () => settle('failed');
+  player.onplaying = () => { started = true; progress(); };
+  player.ontimeupdate = player.onratechange = () => { if (started) progress(); };
   player.src = piece.url; applyRate();
-  const finish = () => { playing = false; player.onended = player.onerror = null; if (!queue.length && nowSpan) { nowSpan.classList.remove('now'); nowSpan.classList.add('done'); nowSpan = null; } playNext(mine); };
-  player.onended = finish; player.onerror = finish;
-  player.play().catch(() => { setMode('speaking', 'Tap the orb to hear the reply'); orb.onclick = () => { orb.onclick = orbTap; player.play(); }; });
+  arm(START_MS);
+  player.play().catch((e) => { if (token === playToken) settle(e?.name === 'NotAllowedError' ? 'refused' : 'failed'); });
 }
 const whilePlaying = () => new Promise((resolve) => { const tick = () => (playing || queue.length ? setTimeout(tick, 120) : resolve()); tick(); });
-function interrupt() { if (!busy) return; currentTurn++; queue = []; player.pause(); playing = false; busy = false; if (nowSpan) { nowSpan.classList.remove('now'); nowSpan = null; } earOn(); fetch('/api/skip', { method: 'POST' }).catch(() => {}); }
+function interrupt() { if (!busy) return; currentTurn++; playToken++; queue = []; player.pause(); playing = false; busy = false; if (nowSpan) { nowSpan.classList.remove('now'); nowSpan = null; } earOn(); fetch('/api/skip', { method: 'POST' }).catch(() => {}); }
+// Plays sentences outside a live turn (a caught-up reply, or one iOS held back) the way a live reply
+// plays: mic off while it plays, back on when the queue is done. During a turn they join its queue.
+async function playPieces(pieces) {
+  const joining = busy;
+  if (!joining) { busy = true; earOff(); unlock(); ++currentTurn; queue = []; nowSpan = null; heldAudio = null; }
+  const mine = currentTurn;
+  for (const p of pieces) { enqueue(p); playNext(mine); }
+  if (joining) return;
+  await whilePlaying();
+  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', STOPPED_LABEL); fetchStats(); }
+}
 // a tap on the orb: while busy it interrupts; in manual mode it starts/sends this utterance;
 // otherwise it's a gesture that resumes the audio pipeline if iOS paused it (never done automatically)
 async function orbTap() {
   if (busy) return interrupt();
+  if (heldAudio) { const pieces = heldAudio; heldAudio = null; clientLog(`audio held: tap plays ${pieces.length}`); return playPieces(pieces); }
   if (!on) return;
   if (micDead || yielded) { setMode('thinking', 'Opening the microphone'); try { await repairMic(); micDead = yielded = false; } catch (e) { setMode('error', 'Microphone: ' + (e.message || e)); return; } return earOn(); }
   if (voiceMode === 'manual') return toggleDictate();
@@ -475,7 +542,7 @@ async function start() {
   on = true; yielded = false; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
   setMode('listening', listeningLabel()); touch();
 }
-function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
+function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; heldAudio = null; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', STOPPED_LABEL); }
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
@@ -608,7 +675,7 @@ $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preven
 // /api/reset clears the session before it responds, so the stats read back zero right after.
 const resetConversation = async () => {
   await fetch('/api/reset', { method: 'POST' });
-  logEl.innerHTML = ''; currentGroup = null;
+  logEl.innerHTML = ''; currentGroup = null; heldAudio = null;
   reply.textContent = ''; reply.style.display = 'none'; heard.classList.add('hidden');
   hint.style.display = ''; hint.textContent = nextStep() || '';
   fetchStats();
@@ -643,27 +710,20 @@ let liveStreams = 0;   // turn streams open right now
 const advanceCursor = () => { if (!liveIds.has(eventsCursor + 1)) return; while (liveIds.delete(eventsCursor + 1)) eventsCursor++; saveEventsState(); };
 const markLive = (id) => { if (id > eventsCursor) liveIds.add(id); advanceCursor(); };
 const catchUpAudioByTurn = {};
-// Plays a caught-up turn's sentences through the same player/queue/currentTurn mechanism turn()
-// uses, in the order the server produced them. It never cuts off what you're saying: it waits until
-// the utterance is sent or dropped (auto: the VAD has speech open; manual: a dictation is being
-// recorded). If a turn is running by then, it joins that turn's queue ahead of anything produced
-// later; otherwise it takes the mic offline exactly like a live reply does.
+// A caught-up reply: its text shows the moment it arrives, and its sentences play when they can, never
+// over what you're saying (auto: the VAD has speech open; manual: a dictation is recording). With the
+// earphone muted the phone has nothing to play (the room hears this machine's speakers), so the text is
+// all it shows. The poller doesn't wait for this, so a reply waiting to play never holds up the next one.
 async function playCatchUpAudio(turnId, full, from) {
   const pieces = (catchUpAudioByTurn[turnId] || []).filter(Boolean);
   delete catchUpAudioByTurn[turnId];
-  if (!pieces.length) { renderTurnText(full, turnId, from); fetchStats(); return; }
-  while (speechOpen || holding || (voiceMode === 'manual' && dictating)) await sleep(300);
-  const joining = busy;
-  if (!joining) { busy = true; earOff(); unlock(); ++currentTurn; queue = []; nowSpan = null; reply.textContent = ''; }
-  const mine = currentTurn;
-  // The same order as a live turn: the sentences on screen as they're queued, then renderTurnText
-  // adds the conversation entry (and shows no text of its own, since the sentences are there).
-  for (const p of pieces) { enqueue({ id: p.id, url: p.url, span: addPiece(p.text) }); playNext(mine); }
+  if (!busy) { reply.textContent = ''; heldAudio = null; }
   renderTurnText(full, turnId, from);
   fetchStats();
-  if (joining) return;   // the running turn waits for the whole queue before it gives the mic back
-  await whilePlaying();
-  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); }
+  if (!pieces.length || earMuted) return;
+  while (speechOpen || holding || (voiceMode === 'manual' && dictating)) await sleep(300);
+  if (!busy) reply.textContent = '';
+  await playPieces(pieces.map((p) => ({ id: p.id, url: p.url, span: addPiece(p.text) })));
 }
 const handleCaughtUpEvent = async (ev) => {
   if (ev.type === 'transcript') {
@@ -672,7 +732,7 @@ const handleCaughtUpEvent = async (ev) => {
   } else if (ev.type === 'audio') {
     (catchUpAudioByTurn[ev.turnId] ||= [])[ev.index] = { id: ev.id, url: ev.url, text: ev.text };
   } else if (ev.type === 'text') {
-    await playCatchUpAudio(ev.turnId, ev.full || ev.text, ev.from);
+    playCatchUpAudio(ev.turnId, ev.full || ev.text, ev.from);   // not awaited: see playCatchUpAudio
   }
   // other event types (status/done/error/ignored) carry nothing worth catching up on
 };
