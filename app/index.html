@@ -166,6 +166,7 @@ let queue = [], playing = false, currentTurn = 0, paused = false, nowSpan = null
 // Nothing else waits for them — the page carries on as if that reply had finished.
 let heldAudio = null;
 const HELD_LABEL = 'Tap the orb to hear the reply';
+const STOPPED_LABEL = 'Let’s talk.';   // after Stop, the same as a fresh page; 'Paused' is only for a held mute or a paused reply
 let voiceMode = 'auto';   // 'auto' (default) or 'manual'
 try { if (localStorage.getItem('voiceMode') === 'manual') voiceMode = 'manual'; } catch {}
 const listeningLabel = () => (voiceMode === 'manual' ? 'Tap the orb to talk' : 'Listening');   // shown on the orb whenever the mic goes live
@@ -419,7 +420,7 @@ async function turn(init) {
     if (mine === currentTurn) {
       await whilePlaying();
       busy = false;
-      if (on) earOn(); else setMode('off', 'Paused');
+      if (on) earOn(); else setMode('off', STOPPED_LABEL);
       fetchStats();
     }
   }
@@ -473,7 +474,7 @@ async function playPieces(pieces) {
   for (const p of pieces) { enqueue(p); playNext(mine); }
   if (joining) return;
   await whilePlaying();
-  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); fetchStats(); }
+  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', STOPPED_LABEL); fetchStats(); }
 }
 // a tap on the orb: while busy it interrupts; in manual mode it starts/sends this utterance;
 // otherwise it's a gesture that resumes the audio pipeline if iOS paused it (never done automatically)
@@ -511,7 +512,7 @@ async function start() {
   on = true; yielded = false; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
   setMode('listening', listeningLabel()); touch();
 }
-function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; heldAudio = null; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', 'Paused'); }
+function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; heldAudio = null; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', STOPPED_LABEL); }
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
