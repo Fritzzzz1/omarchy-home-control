@@ -274,7 +274,8 @@ MONITOR_PORT=$MONITOR_PORT
 WHISPER_URL=$WHISPER_URL
 WHISPER_MODEL=$WHISPER_MODEL
 
-# Local playback of replies on this machine's own speakers (mpv or ffplay).
+# Local playback of replies on this machine's own speakers: mpv or ffplay, or "off" for no
+# playback on this machine at all (phone only).
 VOICE_LOCAL_PLAYER=$LOCAL_PLAYER
 
 # Who the agent thinks it is talking to. Used when a long reply is rewritten for
@@ -300,13 +301,24 @@ VOICE_SPEECH_REWRITE=$SPEECH_REWRITE
 # May the agent hand work to another live Claude Code session on this machine?
 # "on" adds ListAgents and SendMessage to the tools it is allowed to use.
 # Change it here, then re-render voice-mode.md and add or remove the relay skills
-# in VOICE_ROOT/.claude/skills to keep them in step. A missing tool is a reason
-# to delegate; a denied action is not.
+# in VOICE_ROOT/.claude/skills to keep them in step.
 VOICE_PEER_DELEGATION=$PEER_DELEGATION
 
 # Optional: pin the model / thinking effort. Unset = the claude CLI's defaults.
 #VOICE_MODEL=
 #VOICE_EFFORT=low
+
+# The claude CLI's permission mode for the voice agent. acceptEdits (default) applies edits
+# without asking; auto lets Claude Code's own auto mode decide instead.
+#VOICE_PERMISSION_MODE=acceptEdits
+
+# Optional: a command run for each phone turn as soon as its input is known, given the user's input as JSON on stdin —
+# never the agent's reply. See setup/PLUGINS.md.
+#VOICE_ON_INPUT=
+
+# Optional: away mode (silences this machine's speakers while the phone still gets replies).
+# See setup/PLUGINS.md.
+#VOICE_AWAY=on
 
 # Used by home-control-ctl to build the phone URL.
 HOME_CONTROL_TAILNET_HOST=$TAILNET_HOST

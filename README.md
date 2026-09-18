@@ -44,6 +44,9 @@ Omarchy web-app launcher.
 `~/.config/home-control/config.env` — `KEY=VALUE`, commented, written by setup.
 `systemctl --user restart home-control` to apply (not mid-conversation).
 
+Optional features (plugins) — away mode, local speakers/display, an input hook, permission mode —
+are in `setup/PLUGINS.md`.
+
 ## Commands
 
 ```

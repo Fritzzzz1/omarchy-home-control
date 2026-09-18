@@ -144,7 +144,8 @@ fits what you've learned about this machine; adapt or skip pieces of it if it do
   pattern used by other Omarchy web apps — don't just declare it installed. Only if they install
   it: this machine can also play replies out loud through its own speakers, near the dashboard
   (already wired via `VOICE_LOCAL_PLAYER`, mpv/ffplay) — ask whether they want that in addition
-  to phone playback, or instead of it; recommend both by default. `monitor.mjs` reads
+  to phone playback, or instead of it (`VOICE_LOCAL_PLAYER=off`, phone only — see
+  `setup/PLUGINS.md`'s speakers section); recommend both by default. `monitor.mjs` reads
   Claude Code's own session-file format directly — if the confirmed runtime isn't Claude Code,
   go adapt that data source to whatever equivalent that runtime actually offers (its own
   transcript format, or just what `server.mjs` is already tracking) rather than shipping a
@@ -177,3 +178,11 @@ If the confirmed runtime is Claude Code and delegation (§8) is on, close by tel
 `CLAUDE.md` says: delegation only reaches a session that's actually running at the moment the
 voice channel tries to use it — remind them to leave this session or another one up, in
 remote-control/auto mode, if they want the voice channel to have real tool access through it.
+
+## 11. Optional plugins
+
+Once the round trip in §10 confirms setup works, offer the plugins in `setup/PLUGINS.md` one at a
+time — away mode, a display, an input hook, permission mode. (Speakers were already offered in
+§9 as part of the dashboard; don't re-offer them here.) Each is optional and machine-specific: ask
+before adding any of them, skip what the user doesn't want, and `home-control-ctl restart` (only
+with their agreement) to pick up whatever they do want.

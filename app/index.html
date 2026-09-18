@@ -674,7 +674,7 @@ voiceModeSeg.buttons.forEach((b) => { b.onclick = () => setVoiceMode(b.dataset.m
 const textFlowSeg = segButtons('.seg-text', 'text', (v) => v === textFlow);
 const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant'; try { localStorage.setItem('textFlow', textFlow); } catch {} textFlowSeg.apply(); };
 const rateSeg = segButtons('.seg-rate', 'rate', (v) => Number(v) === speechRate);
-// The same number governs the machine's own speaker (what the TV plays), so a change here is
+// The same number governs this machine's own speakers, so a change here is
 // pushed to the server, and the server's value wins on load — the two never drift apart.
 const setSpeechRate = (r, push = true) => { r = Number(r); speechRate = RATES.includes(r) ? r : 1; try { localStorage.setItem('speechRate', String(speechRate)); } catch {} rateSeg.apply(); applyRate(); if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {}); };
 rateSeg.apply();

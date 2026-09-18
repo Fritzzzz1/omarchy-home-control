@@ -11,6 +11,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBody } from './request-body.mjs';
+import { runInputHook } from './input-hook.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
@@ -49,6 +50,11 @@ const parseOnOff = (raw, unset = true) => {
   return unset;
 };
 const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
+// The claude CLI's permission mode for the voice agent. acceptEdits (upstream default) applies
+// edits without asking; auto lets Claude Code's own auto mode decide instead.
+const PERMISSION_MODE = process.env.VOICE_PERMISSION_MODE || 'acceptEdits';
+// Whether an input-hook command is configured, so its log lines only appear when it's in use.
+const INPUT_HOOK_CONFIGURED = Boolean((process.env.VOICE_ON_INPUT || '').trim());
 // By design: the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
 const ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebFetch', 'WebSearch',
@@ -57,8 +63,7 @@ const ALLOWED_TOOLS = [
 ];
 // Handing work to another live Claude Code session on this machine. Opt-in, and
 // off unless install.sh was explicitly told otherwise, because it widens who can
-// act on a spoken request. The rule that goes with it is in voice-mode.md:
-// lacking a tool is a reason to delegate; having been refused is not.
+// act on a spoken request.
 if ((process.env.VOICE_PEER_DELEGATION || '').toLowerCase() === 'on') {
   ALLOWED_TOOLS.push('ListAgents', 'SendMessage');
 }
@@ -198,7 +203,7 @@ const claudeArgs = (session, newId) => {
   const args = [
     '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
     '--append-system-prompt-file', path.join(HERE, 'voice-mode.md'),
-    '--permission-mode', 'acceptEdits',
+    '--permission-mode', PERMISSION_MODE,
     '--allowedTools', ...ALLOWED_TOOLS,
     '--settings', PERMISSION_SETTINGS,
   ];
@@ -243,13 +248,14 @@ const spawnClaude = () => {
         const relayTurnId = `relay-${crypto.randomBytes(6).toString('hex')}`;
         // Read the sender now: while this reply renders, the next session's message can reach the file.
         const from = relaySender(ev.session_id || claudeSession().id);
+        const gen = speechGen;   // reset (hush) after this point skips playLocally below, same reply still logged
         (async () => {
           const spoken = stripMarkdown(ev.result);
           const groups = sentenceGroups(spoken);
           const renders = groups.map((g) => speak(g).catch(() => null));
           for (let i = 0; i < renders.length; i++) {
             const a = await renders[i];
-            if (a) { playLocally(a.file, i, groups[i]); logEvent(relayTurnId, { type: 'audio', url: a.url, index: i, text: groups[i] }); }
+            if (a) { if (gen === speechGen) playLocally(a.file, i, groups[i]); logEvent(relayTurnId, { type: 'audio', url: a.url, index: i, text: groups[i] }); }
           }
           logEvent(relayTurnId, { type: 'text', text: spoken, full: ev.result, from });
         })();
@@ -434,9 +440,11 @@ setInterval(() => {
 // exited — same rule the phone's playNext() already follows client-side; without it, two
 // sentences rendered close together spawn overlapping players and blob together.
 // Fire-and-forget from the caller's perspective: playback failure never breaks the phone side.
+// mpv or ffplay play this turn's audio on this machine's own output; 'off' means no playback
+// here at all (checked first in playLocally, before any turn state is touched).
 const LOCAL_PLAYER = process.env.VOICE_LOCAL_PLAYER || 'mpv';
 // Speaking speed. The phone can only speed up its own <audio>; this is the same setting applied
-// to the machine's own output — the one the TV plays — so a tap on the phone changes what the
+// to the machine's own output — this machine's speakers — so a tap on the phone changes what the
 // room hears too. On disk, so a restart doesn't quietly drop back to 1x.
 const RATE_FILE = path.join(STATE, 'speech-rate.json');
 const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 1.75];
@@ -507,16 +515,19 @@ const applyLiveVolume = () => {
     { command: ['af-command', 'gain', 'volume', `${speechGainDb()}dB`] },
   ].map((c) => JSON.stringify(c) + '\n').join('')));
 };
-// Away mode: when true, replies are still sent to the phone as normal, but this machine's own
-// speakers stay silent — no TTS on the machine or the TV it drives. Set directly by the agent
-// (it has filesystem access) when the user says they're leaving or back — no route needed for a single
-// bool nothing else ever sets. Checked at play time (once per sentence), so a plain file write
-// takes effect immediately without a server restart or an HTTP round trip to itself — but the
-// value is cached against the file's mtime, so the common case is one stat() rather than a read
-// plus a JSON.parse on every sentence. A missing file means not away.
+// Away mode: optional feature switched on by VOICE_AWAY. When on: replies are still sent to the
+// phone as normal, but this machine's own speakers stay silent — no TTS on this machine's
+// speakers. Set directly by the agent (it has filesystem access) when the user says they're
+// leaving or back — no route needed for a single bool nothing else ever sets. Checked at play
+// time (once per sentence), so a plain file write takes effect immediately without a server
+// restart or an HTTP round trip to itself — but the value is cached against the file's mtime, so
+// the common case is one stat() rather than a read plus a JSON.parse on every sentence. A missing
+// file means not away. When off, isAway() always returns false and never touches the file.
+const AWAY_ON = parseOnOff(process.env.VOICE_AWAY, false);
 const AWAY_FILE = path.join(STATE, 'away.json');
 let awayCache = false, awayMtime = null;
 const isAway = () => {
+  if (!AWAY_ON) return false;
   let mtime = null;
   try { mtime = fs.statSync(AWAY_FILE).mtimeMs; } catch {}
   if (mtime === awayMtime) return awayCache;
@@ -533,9 +544,22 @@ let localChild = null;
 let nowPlaying = null;          // { index, text } while a sentence is playing
 let turnSentences = [];         // every sentence of the current turn, in order
 const resetSpokenState = () => { nowPlaying = null; turnSentences = []; };
+// Hush (the phone's reset button): the turn running when it was pressed says nothing more on this
+// machine. It lifts when that turn ends (handleTurn's finally), so the next turn speaks normally.
+let hushed = false;
+// Bumped by the same button, but this one also reaches a relay reply: busy is false for those, so
+// `hushed` alone never covers them. The relay loop below captures the value at its start and stops
+// calling playLocally once it no longer matches — it keeps logging text/audio events either way, so
+// the phone still gets the full reply, just silent on this machine.
+let speechGen = 0;
 const playLocally = (file, index = null, text = '') => {
-  const myTurn = localTurn;
+  // Recorded before the early returns below: the monitor dashboard's sentence list should fill
+  // even with no machine speakers (LOCAL_PLAYER=off) or mid-hush — away mode already worked this
+  // way since isAway() is checked further down, inside the queued playback itself.
   if (text && index !== null) turnSentences[index] = text;
+  if (LOCAL_PLAYER === 'off') return;
+  if (hushed) return;
+  const myTurn = localTurn;
   localQueue = localQueue.then(() => new Promise((resolve) => {
     if (myTurn !== localTurn) return resolve(); // skipped before its turn came up
     if (isAway()) return resolve(); // away mode: phone still gets it, this machine stays silent
@@ -672,9 +696,10 @@ const handleTurn = async (req, res) => {
   const send = (ev) => { const entry = logEvent(turnId, ev); sendRaw({ ...ev, id: entry.id }); };
   const started = Date.now();
   try {
-    let text, lang;
+    let text, lang, inputAudio;
     if ((req.headers['content-type'] || '').startsWith('audio/')) {
       const wav = await readBody(req, 20e6);
+      inputAudio = wav;
       send({ type: 'status', text: 'transcribing' });
       text = await transcribe(wav, (stage) => send({ type: 'status', text: stage, startup: true }));
       if (!text) { log(`ignored: nothing usable in ${wav.length} bytes of audio`); send({ type: 'ignored' }); return; }
@@ -687,6 +712,11 @@ const handleTurn = async (req, res) => {
       if (!text) { send({ type: 'error', text: 'empty' }); return; }
       lang = body.lang === 'he' ? 'he' : detectLang(text);
     }
+    // Fired here, not awaited: the input is known as soon as text exists, independent of
+    // playback (finally used to wait for localQueue first, so a hung/dead process lost it, and
+    // it ran after the machine finished speaking instead of right away). No local var to hold it
+    // in past this call, so its audio reference is dropped as soon as the hook is handed off.
+    if (INPUT_HOOK_CONFIGURED) runInputHook({ at: new Date(started).toISOString(), text, audio: inputAudio }).then(() => log('input hook: ran'), (e) => log(`input hook: failed: ${e.message}`));
     const first = !claudeSession().id;
     send({ type: 'status', text: first ? 'waking up' : 'thinking' });
     warmTts(lang);
@@ -706,11 +736,12 @@ const handleTurn = async (req, res) => {
     send({ type: 'error', text: e.message });
   } finally {
     // The phone reopens its mic once this response ends (its own queue already drained by
-    // then). If we ended it while the TV was still playing this turn's sentences, the mic
-    // would come on mid-playback and hear itself. Waiting for localQueue here — the same
-    // chain playLocally() feeds — closes that gap; skipLocal() (via /api/skip) still cuts
-    // it short on demand.
+    // then). If we ended it while this machine's speakers were still playing this turn's
+    // sentences, the mic would come on mid-playback and hear itself. Waiting for localQueue
+    // here — the same chain playLocally() feeds — closes that gap; skipLocal() (via /api/skip)
+    // still cuts it short on demand.
     try { await localQueue; } catch {}
+    hushed = false;
     busy = false;
     res.end();
   }
@@ -752,7 +783,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/') return html(res, 'index.html');
     if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
-    if (url.pathname === '/api/skip' && req.method === 'POST') { skipLocal(); return json(res, 200, { ok: true }); }
+    if (url.pathname === '/api/skip' && req.method === 'POST') { if (url.searchParams.get('hush') === '1') { if (busy) hushed = true; speechGen++; } skipLocal(); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/client-log' && req.method === 'POST') { const b = await readJsonRequest(req); log('phone: ' + String(b?.msg ?? '').slice(0, 400)); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/rate' && req.method === 'POST') {
       const body = await readJsonRequest(req);
@@ -777,7 +808,9 @@ const server = http.createServer(async (req, res) => {
       log(`session reset (was ${old.id}, ${old.turns} turns)`);
       return json(res, 200, { ok: true });
     }
-    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, volume, away: isAway() }); }
+    // away here also covers LOCAL_PLAYER === 'off': with no machine speakers, the phone is the
+    // only player, so it must start unmuted exactly like real away mode does.
+    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, volume, away: LOCAL_PLAYER === 'off' || isAway() }); }
     if (url.pathname === '/api/session-stats') return json(res, 200, sessionStats());
     if (url.pathname === '/api/transcript') {
       const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];

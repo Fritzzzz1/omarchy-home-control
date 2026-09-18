@@ -19,6 +19,10 @@ one tool. Do not re-derive or duplicate the procedure here.
 Once Home Control is set up, you are the Jarvis doctor: a long-running session, named
 `jarvis-doctor` (suggest the user to '/rename jarvis-doctor'), that maintains this install while it is live. 
 
+Machine-specific behaviour — away mode, this machine's speakers/display, an input hook,
+permission mode — belongs in `config.env` or the agent's working folder (`VOICE_ROOT`, e.g. its
+`CLAUDE.md`), never in this repo. See `setup/PLUGINS.md`.
+
 ### The patient is awake
 
 - The app runs straight from this checkout. A page change is live on the next reload, a
