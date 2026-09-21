@@ -230,9 +230,18 @@ const setMode = (cls, text) => {
   const step = nextStep(); if (step) hint.textContent = step;
   $('cancelRec').classList.toggle('show', on && !busy && !muted && (voiceMode === 'manual' ? dictating : speechOpen));
   const speaking = cls === 'speaking';
-  $('pause').classList.toggle('hidden', !speaking); $('skip').classList.toggle('hidden', !speaking); $('pause').disabled = !speaking; $('skip').disabled = !speaking; reply.classList.toggle('speaking', speaking);
+  $('pause').classList.toggle('hidden', !speaking); $('pause').disabled = !speaking; reply.classList.toggle('speaking', speaking);
+  syncSkip();
   if (!speaking) setPaused(false);
 };
+// Skip is the one control that reaches past this phone. It is live whenever this phone is
+// speaking, as before, and also whenever this machine's speakers are — a relay reply (another
+// session woke the agent) is spoken in the room before the phone has polled it into view, and a
+// reply the earphone is muted for is spoken there and nowhere else. In both cases the phone is
+// not "speaking" and has nothing of its own to stop, but the room does, and /api/skip stops it.
+// Pause stays phone-only: it pauses this page's <audio>, which is not what the room is playing.
+let machineSpeaking = false;
+const syncSkip = () => { const live = orb.className === 'speaking' || machineSpeaking; $('skip').classList.toggle('hidden', !live); $('skip').disabled = !live; };
 const setPaused = (p) => { paused = p; $('pause').setAttribute('aria-label', p ? 'Resume reply' : 'Pause reply'); $('pauseIcon').style.display = p ? 'none' : ''; $('playIcon').style.display = p ? '' : 'none'; };
 // Messages in #log are grouped into one collapsible <details> per turn, collapsed to a one-line
 // preview. A user message starts a turn and the agent's reply joins it. A reply that another
@@ -283,11 +292,37 @@ const keepAwake = async () => { try { wakeLock = await navigator.wakeLock?.reque
 // dropped while hidden) and polls for anything missed while backgrounded. pollEvents is defined
 // further down, but this only ever runs after load, so the hoisted declaration is in place.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') { if (on) yieldMic(); return; }
+  if (document.visibilityState !== 'visible') { watchMachine(false); if (on) yieldMic(); return; }
   // Coming back is a choice, so auto mode takes the mic back; checkMic falls back to a tap if it's still taken.
   if (on) { keepAwake(); if (yielded && voiceMode === 'auto') yielded = false; checkMic(); }
-  pollEvents();
+  pollEvents(); watchMachine(true);
 });
+// Whether this machine's speakers are busy is the server's `nowPlaying`, and /api/state is the
+// only way to read it — there is no live channel to this phone outside its own turn. So it is
+// polled, but only while the page is in front of you: a reply spoken in the room is a reason to
+// pick the phone up, and by the time you are looking at it the skip button is live. Backgrounded,
+// the poll stops and costs nothing, and the flag is cleared so a stale one can't outlive it.
+const MACHINE_MS = 2000, MACHINE_GRACE_MS = 3500;
+let machineTimer = null, machineHeardAt = 0;
+const readMachine = async () => {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    if (s.nowPlaying) machineHeardAt = Date.now();
+    // One sentence ends before the next one spawns, so nowPlaying is null for a moment in the
+    // middle of a reply. Holding the button past a single empty read keeps it from going out
+    // from under a thumb. A skip that lands in that window still does the right thing: it stops
+    // the sentences of the reply that have not been rendered yet.
+    const live = Date.now() - machineHeardAt < MACHINE_GRACE_MS;
+    if (live === machineSpeaking) return;
+    machineSpeaking = live; syncSkip();
+  } catch {}
+};
+const watchMachine = (want) => {
+  if (want === !!machineTimer) return;
+  if (!want) { clearInterval(machineTimer); machineTimer = null; machineHeardAt = 0; if (machineSpeaking) { machineSpeaking = false; syncSkip(); } return; }
+  machineTimer = setInterval(readMachine, MACHINE_MS); readMachine();
+};
+if (document.visibilityState === 'visible') watchMachine(true);
 
 // ---- the ear: Silero VAD on the open microphone; each utterance becomes one WAV and one turn
 const wavFromFloat32 = (samples, rate = 16000) => {
@@ -557,7 +592,18 @@ async function orbTap() {
   setMode('listening', 'Listening');
 }
 orb.onclick = orbTap;
-$('skip').onclick = interrupt;
+$('skip').onclick = () => {
+  if (busy) return interrupt();
+  if (!machineSpeaking) return;
+  // The same plain /api/skip interrupt() has always sent, and it means here what it has always
+  // meant on this machine: drop the sentence being spoken and the ones already queued behind it.
+  // A relay reply renders sentence by sentence, so the rest of it still comes — tap again to skip
+  // the next one. Silencing a whole reply in one tap is the reset button's job, not this one's.
+  fetch('/api/skip', { method: 'POST' }).catch(() => {});
+  // The button is deliberately left lit: the reply goes on, and the next tap skips the next
+  // sentence. Darkening it here would cost a tap while the poll caught up. Once the reply really
+  // is over the poll puts it out, and a tap that beats it by a second skips nothing and harms nothing.
+};
 $('pause').onclick = () => {
   if (!playing) return;
   setPaused(!paused);
