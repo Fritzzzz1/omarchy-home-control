@@ -106,10 +106,97 @@ Jev decision point to a new use case (question design, threshold, shadow log, re
 The branch is tested by checking it out in this checkout and `home-control-ctl restart`
 (the persona commit `22d77d3` on `dev` is its base). Back to `dev` or `main` when Liran decides.
 
-## Next, after the POC (Liran, 2026-09-21)
+## The drop gate (implemented 2026-09-21, sequential since 2026-09-21)
 
-Noul `addressed_to_jarvis`: drop empty transcriptions, scrambles, mis-recordings and misclicks
-before Claude wakes. Must see the last one or two exchanges of the conversation in `state`, so a
-bare "yes", "no", "done", "fine" that answers the previous round is not dropped.
-Rule, made explicit by Liran: drop only unreadable text or an unknown language. Readable English or
-Hebrew always goes through, however short.
+Not one request with an extra question: a **sequence**, so that each step only costs what it is
+worth and a dropped turn stops dead.
+
+1. **Duration gate.** The recording's length is read from the WAV header (data bytes / byte rate,
+   chunks walked rather than assumed) *before* transcription. Typed turns have no duration and
+   skip everything below.
+2. **Verbose whisper for short clips.** Under `JEV_SHORT_MAX_S` (default 3.0 s) whisper is asked
+   for `response_format=verbose_json` — `duration`, `segments[].words[].{word,probability}`,
+   `segments[].avg_logprob`, `detected_language(_probability)`. Longer clips get plain `json`,
+   exactly as before. The `HALLUCINATIONS` filter runs on the text first in both cases.
+3. **The garbage check** — a separate Jev request (`checkGarbage`) containing two Nouls,
+   `addressed_to_jarvis` and `complete_utterance`, in ONE request (Liran's call: one round trip
+   for both), read sequentially in code. Its state: the text, the duration, each word with its probability, the
+   average log-probability, the detected language and its probability, and the last exchanges.
+   `no_speech_prob` is deliberately left out: it is misleading on short clips. The criteria are
+   unchanged — readable English or Hebrew passes however short; only unreadable, garbled,
+   non-word or other-language text can fail — plus one sentence saying that the word
+   probabilities and the detected language are evidence about whether this was speech at all.
+4. **The intent request** runs only for a turn that survived, and is byte-for-byte the original
+   one: `intent`, `tv_action`, `level`, no noul.
+
+The first Noul answers one thing only:
+
+- **true** — carries a meaning of its own, or answers / refers to something in the recent exchanges shown.
+- **false** — a fragment: a false start, interjection, stray word or cut-off, or a reply / reference with no recent exchange it belongs to.
+- Rule (Liran, 2026-09-21): judged by meaning, never by word count; the 3 s gate already decides who is asked. A cold "mute" or "I'm going out" stands alone and passes; a cold "yes" or "why is that?" has nothing to answer and drops. Measured: "yes" cold 0.20 / with a question 0.94; "why is that?" cold 0.27 / after an answer 0.94; "mute" cold 0.77.
+
+**The rule, Liran's, exactly:** drop a turn ONLY when the transcript is unreadable text or an
+unknown language — whisper garbage, scrambles, mis-recordings, misclicks. Readable English or
+Hebrew ALWAYS goes through, however short; a bare "yes", "no", "done", "fine" answering the
+previous round must pass. So the state carries the last exchanges as `{user, agent}` pairs, not
+just the user's words, and a short answer is judged next to what it answers.
+
+The second Noul, `complete_utterance`, is read only for a turn the first one let through:
+readable speech is not yet a turn worth answering.
+
+- **false** — a fragment: a false start, stray word, interjection or cut-off with no request,
+
+**Liran's rule for short utterances (2026-09-21):** a one- or two-word utterance is complete ONLY
+next to a recent exchange it relates to ("yes", "no", "done", "mute" after the assistant said or
+asked something they answer). With no recent exchange in the state, or one they do not relate to,
+words and up are judged on their own as before.
+
+`JEV_FRAGMENT_MIN` (default 0.6, env `JEV_FRAGMENT_MIN`, live key `fragment_min`, file > env >
+default): in mode `on`, when the first gate passed and the probability of *complete* is below
+`1 - JEV_FRAGMENT_MIN`, the turn is dropped with reason `fragment`; in `shadow` it is only logged
+as `router: would drop (fragment p=0.31) "<text>"`. A missing or malformed `complete_utterance`
+answer never drops.
+
+**Drop order:** `addressed_to_jarvis` first (reason `garbage`), then `complete_utterance` (reason
+`fragment`). The trace carries `garbage.complete` next to `garbage.addressed`, `routed:
+'dropped'` is unchanged, and `drop_reason` (`garbage`|`fragment`) is on both the trace line and
+the transcript row, whose agent reads `<router:dropped:garbage>` / `<router:dropped:fragment>`.
+`router-report` prints both probabilities in the garbage block and an `addr` and a `cmpl` column;
+`router-dash` shows "short 1.2 s · addressed 0.94 · complete 0.31", the reason in the DROPPED
+badge, and `frag≥0.6` in the header config line.
+
+`JEV_DROP_MIN` (default 0.90): in mode `on`, when the probability of *addressed* is below
+`1 - JEV_DROP_MIN` (i.e. Jev is ≥ 0.90 sure it is not speech), the turn ends right there — no
+intent request, no Claude, no TTS, `{type:'ignored'}` to the phone exactly as an empty
+transcription does, a transcript row with `agent: "<router:dropped>"` and `cost: 0`, and
+`routed: "dropped"`, `result.by: "router"` in the trace. In `shadow` it is only logged. A missing
+or malformed noul answer, or any failure of the garbage check at all, counts as addressed and
+falls through to the intent request: the gate can only ever drop on a real, confident answer.
+
+    router: dropped (not addressed p=0.03) "<text>"
+
+The trace carries `audio: {duration_s, short}` and, when the check ran, a `garbage` block
+(`state, sent_at, done_at, ms, addressed, request_id, usage, error, words, avg_logprob, language,
+language_p`). `router-report turn` prints it as its own step between "text ready" and the intent
+step, the table's `addr` column comes only from it, and each dashboard card shows
+"short 1.2 s · addressed 0.03" with the word probabilities as chips and a red DROPPED badge.
+
+## Live config
+
+`<VOICE_STATE>/router.json`, next to `router.jsonl`, re-read by mtime before each turn (the same
+trick `isAway()` uses on `away.json`), so nothing below needs a restart:
+
+    { "mode": "off|shadow|on", "route_min": 0.85, "drop_min": 0.90, "fragment_min": 0.6,
+      "short_max_s": 3.0, "model": "jev-latest", "timeout_ms": 1500, "tv_settle_ms": 2000 }
+
+All keys optional; precedence **file > env > default**, per key. A missing file means
+env/defaults. A malformed file keeps the last good values and logs, once per mtime,
+`router: router.json unreadable (<err>), keeping last good config` — a typo must never reset the
+router to defaults mid-conversation. `routerConfig()` returns the effective values; they go into
+every trace line as `config` and into the dashboard header.
+
+## TODO: turns while relay mode is on (Liran, 2026-09-21)
+
+Classic Jev: while relay is on, each turn is a Choice {addressed to Jarvis, relay it, relay off}.
+Depends on relay mode becoming server state (parked above) and on the open question of whether
+the hand-off to another session can run from a headless process rather than the live Claude.

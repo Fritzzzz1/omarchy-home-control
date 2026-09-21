@@ -40,8 +40,23 @@ if (process.argv[2] === 'turn') {
   console.log(`turn ${t.turn_id}   ${t.at}   mode=${t.mode}   lang=${t.lang}   total=${t.total_ms ?? '-'}ms`);
   console.log(`\n  said: ${t.text}`);
   console.log(`  context: away=${t.away} tv_on=${t.tv_on}`);
+  if (t.config) console.log(`  config: mode=${t.config.mode} route>=${t.config.route_min} drop>=${t.config.drop_min} frag>=${t.config.fragment_min ?? '-'} short<${t.config.short_max_s}s ${t.config.model}`);
+  if (t.audio) console.log(`  audio: ${t.audio.duration_s ?? '?'}s${t.audio.short ? ' — short, garbage check ran' : ' — long, no garbage check'}`);
   console.log(`\n  ${time(t.t?.text_ready)}  text ready`);
-  console.log(`  ${time(t.t?.jev_sent)}  jev asked ${since(t.t?.text_ready, t.t?.jev_sent)}`);
+  // The garbage check is its own request, before the intent one: its own block on the timeline.
+  if (t.garbage) {
+    const g = t.garbage;
+    console.log(`\n  ${time(t.t?.garbage_sent)}  garbage check asked ${since(t.t?.text_ready, t.t?.garbage_sent)}`);
+    console.log(`  ${time(t.t?.garbage_done)}  garbage check answered ${since(t.t?.garbage_sent, t.t?.garbage_done)}${g.error ? `  ERROR: ${g.error}` : ''}`);
+    if (g.request_id) console.log(`            request id ${g.request_id}`);
+    if (g.usage) console.log(`            usage ${JSON.stringify(g.usage)}`);
+    const dropped = t.routed === 'dropped' ? (t.drop_reason || 'garbage') : null;
+    if (g.addressed != null) console.log(`    addressed: ${Number(g.addressed).toFixed(3)}${dropped === 'garbage' ? '   DROPPED — not readable speech' : ''}`);
+    if (g.complete != null) console.log(`    complete:  ${Number(g.complete).toFixed(3)}${dropped === 'fragment' ? '   DROPPED — a fragment, not an utterance' : ''}`);
+    if (g.words?.length) console.log(`    words: ${g.words.map((w) => `${w.word} ${Number(w.p).toFixed(2)}`).join('  ')}`);
+    if (g.avg_logprob != null || g.language) console.log(`    avg_logprob ${g.avg_logprob ?? '-'}   language ${g.language ?? '-'}${g.language_p != null ? ` ${Number(g.language_p).toFixed(2)}` : ''}`);
+  }
+  console.log(`\n  ${time(t.t?.jev_sent)}  jev asked ${since(t.t?.garbage_done || t.t?.text_ready, t.t?.jev_sent)}`);
   console.log(`  ${time(t.t?.jev_done)}  jev answered ${since(t.t?.jev_sent, t.t?.jev_done)}${t.jev?.error ? `  ERROR: ${t.jev.error}` : ''}`);
   if (t.jev?.request_id) console.log(`            request id ${t.jev.request_id}`);
   if (t.jev?.usage) console.log(`            usage ${JSON.stringify(t.jev.usage)}`);
@@ -52,7 +67,7 @@ if (process.argv[2] === 'turn') {
       console.log(`    ${pad(name, 10)} ${a.choice ?? a.score ?? a.noul ?? ''}${probs ? `\n      ${probs}` : ''}`);
     }
   }
-  console.log(`\n  routed: ${t.routed || 'no — went to Claude'}`);
+  console.log(`\n  routed: ${t.routed || 'no — went to Claude'}${t.routed === 'dropped' ? ` (${t.drop_reason || 'garbage'})` : ''}`);
   if (t.t?.claude_first_event) console.log(`  ${time(t.t.claude_first_event)}  claude first event ${since(t.t.jev_done, t.t.claude_first_event)}`);
   if (t.t?.claude_done) console.log(`  ${time(t.t.claude_done)}  claude done ${since(t.t.claude_first_event, t.t.claude_done)}`);
   console.log(`  ${time(t.t?.turn_done)}  turn done`);
@@ -64,7 +79,8 @@ if (process.argv[2] === 'turn') {
   }
   if (t.error) console.log(`\n  error: ${t.error}`);
   if (turn) console.log(`  transcript row: agent=${clip(turn.agent, 40)} cost=$${Number(turn.cost || 0).toFixed(4)} ms=${turn.ms}`);
-  console.log(`\n  --- state sent to jev ---\n${(t.jev?.state || '(none)').split('\n').map((l) => '  ' + l).join('\n')}`);
+  if (t.garbage?.state) console.log(`\n  --- state sent to the garbage check ---\n${t.garbage.state.split('\n').map((l) => '  ' + l).join('\n')}`);
+  console.log(`\n  --- state sent to jev (intent) ---\n${(t.jev?.state || '(none)').split('\n').map((l) => '  ' + l).join('\n')}`);
   process.exit(0);
 }
 
@@ -73,11 +89,11 @@ const n = Number(process.argv[2]) || 50;
 const recent = rows.slice(-n);
 const transcript = readJsonl(TRANSCRIPT);
 console.log(`${recent.length} turns from ${ROUTER_FILE}\n`);
-console.log(`${pad('turn', 12)} ${pad('when', 8)} ${pad('label', 13)} ${pad('conf', 5)} ${pad('jev', 6)} ${pad('routed', 7)} ${pad('said', 34)} claude did`);
+console.log(`${pad('turn', 12)} ${pad('when', 8)} ${pad('label', 13)} ${pad('conf', 5)} ${pad('jev', 6)} ${pad('addr', 5)} ${pad('cmpl', 5)} ${pad('routed', 12)} ${pad('said', 34)} claude did`);
 for (const t of recent) {
   const turn = transcript.find((x) => x.user === t.text && Math.abs(Date.parse(x.at) - Date.parse(t.at)) < 600000);
   const did = t.routed ? `(router) ${clip(t.result?.spoken, 30)}` : `$${Number(turn?.cost ?? t.result?.cost ?? 0).toFixed(3)} ${clip(turn?.spoken ?? t.result?.text, 30)}`;
-  console.log(`${pad(t.turn_id, 12)} ${pad(String(t.at).slice(11, 19), 8)} ${pad(t.intent || (t.error ? 'ERR' : '-'), 13)} ${pad(t.confidence != null ? Number(t.confidence).toFixed(2) : '-', 5)} ${pad(t.jev?.ms != null ? t.jev.ms + 'ms' : '-', 6)} ${pad(t.routed || '-', 7)} ${pad(clip(t.text, 34), 34)} ${did}`);
+  console.log(`${pad(t.turn_id, 12)} ${pad(String(t.at).slice(11, 19), 8)} ${pad(t.intent || (t.error ? 'ERR' : '-'), 13)} ${pad(t.confidence != null ? Number(t.confidence).toFixed(2) : '-', 5)} ${pad(t.jev?.ms != null ? t.jev.ms + 'ms' : '-', 6)} ${pad(t.garbage?.addressed != null ? Number(t.garbage.addressed).toFixed(2) : '-', 5)} ${pad(t.garbage?.complete != null ? Number(t.garbage.complete).toFixed(2) : '-', 5)} ${pad(t.routed === 'dropped' ? `dropped:${(t.drop_reason || 'garbage').slice(0, 4)}` : (t.routed || '-'), 12)} ${pad(clip(t.text, 34), 34)} ${did}`);
 }
 
 const pct = (xs, p) => (xs.length ? xs.slice().sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))] : 0);

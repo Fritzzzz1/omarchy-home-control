@@ -34,6 +34,7 @@ function buildSummary(rows) {
   const jevErrors = rows.filter((t) => t.jev?.error).length;
   const jevOk = rows.filter((t) => t.jev && !t.jev.error).length;
   const routed = rows.filter((t) => t.routed).length;
+  const dropped = rows.filter((t) => t.routed === 'dropped').length;
   const byJev = rows.filter((t) => t.result?.by === 'router').length;
   const byClaude = rows.filter((t) => t.result?.by === 'claude').length;
   const modes = {};
@@ -43,11 +44,14 @@ function buildSummary(rows) {
     jev_ok: jevOk,
     jev_errors: jevErrors,
     routed,
+    dropped,
     by_jev: byJev,
     by_claude: byClaude,
     p50: pct(jevMs, 0.5),
     p95: pct(jevMs, 0.95),
     modes,
+    // The effective config of the most recent turn: what the router is running on right now.
+    config: rows.find((t) => t.config)?.config || null,
   };
 }
 
@@ -115,6 +119,7 @@ const PAGE = `<!doctype html>
   .card.err { border-color: #6e2126; }
   .card { border-left: 4px solid var(--border); }
   .card.by-jev { border-left-color: var(--good); }
+  .card.dropped { border-left-color: var(--bad); }
   .card.by-claude { border-left-color: #6e7684; }
   .card.by-claude-err { border-left-color: var(--warn); }
   .card.new { animation: flash 1.8s ease-out; }
@@ -123,6 +128,7 @@ const PAGE = `<!doctype html>
     padding: 3px 9px; border-radius: 5px; margin-bottom: 6px;
   }
   .top-badge.by-jev { background: #123822; color: var(--good); }
+  .top-badge.dropped { background: #4a161a; color: var(--bad); }
   .top-badge.by-claude { background: #262c38; color: #b8c2d0; }
   .top-badge.by-claude-err { background: #3a2f10; color: var(--warn); }
   .filters { display: flex; gap: 6px; margin-left: auto; }
@@ -145,6 +151,15 @@ const PAGE = `<!doctype html>
   .prob-row .name { min-width: 76px; text-align: right; }
   .prob-row .bar-wrap { height: 8px; }
   .prob-row .bar-fill { background: #3a4256; }
+  .addressed { font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+  .words { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px; }
+  .words .chip {
+    font-size: 9px; background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 4px; color: var(--dim); white-space: nowrap;
+  }
+  .words .chip.low { color: var(--warn); border-color: #3a2f10; }
+  .cfg { font-size: 11px; color: var(--dim); }
+  .addressed.dropped { color: var(--bad); font-weight: 600; }
   .tv-info { font-size: 11px; color: var(--warn); margin-bottom: 4px; }
   .err-line { color: var(--bad); font-weight: 600; font-size: 12px; margin: 4px 0; }
   .claude-block { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
@@ -177,6 +192,7 @@ let first = true;
 let filter = 'all'; // all | jev | claude
 
 function turnKind(t) {
+  if (t.result?.by === 'router' && t.routed === 'dropped') return 'dropped';
   if (t.result?.by === 'router') return 'by-jev';
   if (t.error || t.jev?.error) return 'by-claude-err';
   return 'by-claude';
@@ -201,6 +217,10 @@ function probBar(label, p, max) {
   return \`<div class="prob-row"><div class="name">\${esc(label)}</div><div class="bar-wrap"><div class="bar-fill" style="width:\${pct}%"></div></div><div style="width:32px">\${Number(p).toFixed(2)}</div></div>\`;
 }
 
+// The live config, the way it reads in one line: mode on · route>=0.85 · drop>=0.90 · short<3s · jev-latest
+function cfgLine(c) {
+  return \`mode \${c.mode} \u00b7 route\u2265\${c.route_min} \u00b7 drop\u2265\${c.drop_min} \u00b7 frag\u2265\${c.fragment_min} \u00b7 short<\${c.short_max_s}s \u00b7 \${c.model}\`;
+}
 function renderHeader(summary) {
   const modeStr = Object.entries(summary.modes || {}).map(([k, v]) => \`\${k}:\${v}\`).join(' ');
   document.getElementById('header').innerHTML = \`
@@ -210,11 +230,13 @@ function renderHeader(summary) {
     <div class="stat"><div class="v \${summary.jev_errors ? 'bad' : ''}">\${summary.jev_errors}</div><div class="l">jev errors</div></div>
     <div class="stat"><div class="v">\${summary.routed}</div><div class="l">routed</div></div>
     <div class="stat"><div class="v good">\${summary.by_jev}</div><div class="l">by Jev</div></div>
+    <div class="stat"><div class="v \${summary.dropped ? 'bad' : ''}">\${summary.dropped ?? 0}</div><div class="l">dropped</div></div>
     <div class="stat"><div class="v">\${summary.by_claude}</div><div class="l">by Claude</div></div>
     <div class="stat"><div class="v">\${summary.p50 ?? '-'}ms</div><div class="l">jev p50</div></div>
     <div class="stat"><div class="v">\${summary.p95 ?? '-'}ms</div><div class="l">jev p95</div></div>
     <div class="stat"><div class="v" style="font-size:12px">\${esc(modeStr)}</div><div class="l">mode</div></div>
     <div class="stat"><div class="v" style="font-size:12px">routed by Jev \${summary.by_jev} / Claude \${summary.by_claude}</div><div class="l">split</div></div>
+    \${summary.config ? \`<div class="stat"><div class="v cfg">\${esc(cfgLine(summary.config))}</div><div class="l">config</div></div>\` : ''}
     <div class="filters">
       <button class="\${filter === 'all' ? 'active' : ''}" onclick="setFilter('all')">all</button>
       <button class="\${filter === 'jev' ? 'active' : ''}" onclick="setFilter('jev')">routed</button>
@@ -229,7 +251,8 @@ function renderCard(t) {
   const hasErr = !!(t.error || t.jev?.error);
   const kind = turnKind(t);
   let badgeText;
-  if (kind === 'by-jev') badgeText = 'JEV ROUTED · ' + (t.routed || t.intent || '-');
+  if (kind === 'dropped') badgeText = 'DROPPED · ' + ((t.drop_reason || 'garbage') === 'fragment' ? 'fragment' : 'not addressed');
+  else if (kind === 'by-jev') badgeText = 'JEV ROUTED · ' + (t.routed || t.intent || '-');
   else if (kind === 'by-claude-err') badgeText = 'CLAUDE (jev error)';
   else badgeText = 'CLAUDE';
   let html = '';
@@ -238,6 +261,20 @@ function renderCard(t) {
   html += \`<div class="said">\${esc(t.text)}</div>\`;
   html += \`<div class="meta"><span>lang: \${esc(t.lang)}</span><span>away: \${t.away}</span><span>tv_on: \${t.tv_on}</span><span>mode: \${esc(t.mode)}</span>\${t.total_ms != null ? \`<span>total: \${t.total_ms}ms</span>\` : ''}</div>\`;
 
+  // The garbage check: how long the clip was, how sure Jev was it is speech, and the words
+  // whisper thought it heard with what confidence — the evidence the drop was taken on.
+  const addressed = t.garbage?.addressed ?? t.addressed;
+  const bits = [];
+  if (t.audio?.short && t.audio.duration_s != null) bits.push(\`short \${Number(t.audio.duration_s).toFixed(1)} s\`);
+  if (addressed != null) bits.push(\`addressed \${Number(addressed).toFixed(2)}\`);
+  const complete = t.garbage?.complete ?? t.complete;
+  if (complete != null) bits.push(\`complete \${Number(complete).toFixed(2)}\`);
+  if (t.garbage?.error) bits.push('garbage check failed');
+  if (bits.length) html += \`<div class="addressed\${kind === 'dropped' ? ' dropped' : ''}">\${esc(bits.join(' \u00b7 '))}</div>\`;
+  if (t.garbage?.words?.length) {
+    html += '<div class="words">' + t.garbage.words.map((w) =>
+      \`<span class="chip\${w.p < 0.5 ? ' low' : ''}">\${esc(w.word)} \${Number(w.p).toFixed(2)}</span>\`).join('') + '</div>';
+  }
   if (t.intent) {
     const conf = Number(t.confidence || 0);
     html += \`<div class="intent-row"><div class="intent-label">\${esc(t.intent)}</div><div class="bar-wrap"><div class="bar-fill" style="width:\${Math.round(conf*100)}%"></div><div class="pct">\${conf.toFixed(2)}</div></div></div>\`;
@@ -273,7 +310,9 @@ function renderCard(t) {
   const steps = [];
   const tt = t.t || {};
   if (tt.text_ready) steps.push(['text ready', tt.text_ready, null]);
-  if (tt.jev_sent) steps.push(['jev sent', tt.jev_sent, tt.text_ready]);
+  if (tt.garbage_sent) steps.push(['garbage sent', tt.garbage_sent, tt.text_ready]);
+  if (tt.garbage_done) steps.push(['garbage done', tt.garbage_done, tt.garbage_sent]);
+  if (tt.jev_sent) steps.push(['jev sent', tt.jev_sent, tt.garbage_done || tt.text_ready]);
   if (tt.jev_done) steps.push(['jev done', tt.jev_done, tt.jev_sent]);
   if (tt.claude_first_event) steps.push(['claude first', tt.claude_first_event, tt.jev_done]);
   if (tt.claude_done) steps.push(['claude done', tt.claude_done, tt.claude_first_event]);
@@ -285,8 +324,11 @@ function renderCard(t) {
     }).join('') + '</div>';
   }
 
+  if (t.garbage?.state) {
+    html += \`<details class="state"><summary>state sent to the garbage check</summary><pre>\${esc(t.garbage.state)}</pre></details>\`;
+  }
   if (t.jev?.state) {
-    html += \`<details class="state"><summary>state sent to Jev</summary><pre>\${esc(t.jev.state)}</pre></details>\`;
+    html += \`<details class="state"><summary>state sent to Jev (intent)</summary><pre>\${esc(t.jev.state)}</pre></details>\`;
   }
 
   return \`<div class="card \${kind} \${hasErr ? 'err' : ''} \${isNew && !first ? 'new' : ''}" data-id="\${esc(t.turn_id)}">\${html}</div>\`;
@@ -294,7 +336,9 @@ function renderCard(t) {
 
 function renderTurns(turns) {
   const container = document.getElementById('turns');
-  const filtered = filter === 'all' ? turns : turns.filter((t) => (filter === 'jev') === (turnKind(t) === 'by-jev'));
+  const filtered = filter === 'all' ? turns : filter === 'jev'
+    ? turns.filter((t) => turnKind(t) === 'by-jev' || turnKind(t) === 'dropped')
+    : turns.filter((t) => turnKind(t) !== 'by-jev' && turnKind(t) !== 'dropped');
   if (!filtered.length) {
     container.innerHTML = '<div class="empty">No turns match.</div>';
   } else {

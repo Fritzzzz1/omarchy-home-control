@@ -129,11 +129,52 @@ TV command, relay mode) or an ordinary conversation. A routed turn speaks a fixe
 `app/router-lines.json` and never costs a Claude turn; everything else goes to the agent
 untouched. Jev missing, slow (> 800 ms) or wrong never fails a turn — it just means Claude.
 
+**The garbage gate**, in front of all of that, as a sequence: the recording's duration is read
+from its WAV header before transcription; under `JEV_SHORT_MAX_S` the clip is transcribed with
+`verbose_json` (per-word probabilities, segment log-probabilities, detected language) and then a
+*separate* Jev request asks two Nouls, `addressed_to_jarvis` and `complete_utterance`, with that
+evidence in its state — one request, read sequentially, so the second gate costs no round trip.
+
+1. When Jev is at least `JEV_DROP_MIN` sure the transcript is not readable English or Hebrew
+   speech (whisper garbage, a scramble, a mis-recording, a misclick) the turn is dropped with
+   reason `garbage`.
+2. Otherwise, when Jev is at least `JEV_FRAGMENT_MIN` sure this was not a complete utterance — a
+   false start, a stray word, an interjection, a cut-off sentence — the turn is dropped with
+   reason `fragment`. Judged by meaning, not length: an utterance with a meaning of its own
+   ("mute the TV", "I'm going out") passes cold; a reply or reference ("yes", "why is that?") is
+   complete only when the recent exchanges in the state hold what it answers.
+
+A dropped turn means no Claude, no reply, a `cost 0` transcript row with agent
+`<router:dropped:garbage>` or `<router:dropped:fragment>`, and it never reaches the intent
+question. Longer clips and anything typed skip the gate entirely, and a failed garbage check, or
+a missing noul answer, is never a drop.
+
 **Config:**
 
     JEV_API_KEY=<key>            # a TypeSafe AI key; without it the router is inert
     JEV_ROUTER=shadow|on|off     # default off
     #JEV_ROUTE_MIN=0.85          # the confidence a label needs before anything is routed
+    #JEV_DROP_MIN=0.90           # how sure Jev must be that a turn is not readable speech
+                                 # before it is dropped (no Claude, no reply)
+    #JEV_FRAGMENT_MIN=0.6        # how sure Jev must be that a turn is a fragment rather than a
+                                 # complete utterance before it is dropped
+    #JEV_SHORT_MAX_S=3.0         # under this many seconds of audio, a turn gets the garbage check
+    #JEV_MODEL=jev-latest        # jev-latest | jev-preview
+    #JEV_TIMEOUT_MS=1500
+    #JEV_TV_SETTLE_MS=2000       # how long the TV gets to bring HDMI audio up before we speak
+
+**Live config, no restart:** the same settings can be put in `<state dir>/router.json`, which is
+re-read (by mtime) before every turn — so a threshold, the mode or the model can be changed while
+a conversation is live:
+
+    { "mode": "on", "route_min": 0.85, "drop_min": 0.90, "fragment_min": 0.6,
+      "short_max_s": 3.0, "model": "jev-latest", "timeout_ms": 1500, "tv_settle_ms": 2000 }
+
+All keys optional. Precedence is **file > env > default**, per key. A missing file just means
+env/defaults. A malformed file keeps the last good values and logs
+`router: router.json unreadable (...), keeping last good config` once — a typo never silently
+resets the router. The effective config is written into every `router.jsonl` line and shown in
+the `bin/router-dash` header.
 
 `shadow` asks Jev on every turn and writes the answer to `<state dir>/router.jsonl` without
 routing anything — the way to see how it would have behaved before trusting it. `on` routes per

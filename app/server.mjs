@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBody } from './request-body.mjs';
 import { runInputHook } from './input-hook.mjs';
-import { routeTurn, routerMode, tvIsOn, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
+import { routeTurn, garbageCheck, routerMode, routerConfig, setRouterLog, wavDurationS, tvIsOn, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
@@ -412,7 +412,10 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { whisper?.kill()
 
 // Phrases whisper produces for silence and breath; an utterance that is only one of these is dropped.
 // Whisper's known silence artifacts; a real short answer ("yes", "okay", "תודה") is never dropped.
-const HALLUCINATIONS = /^(you\.?|subtitles by .*|תרגום .*|כתוביות .*|\[.*\]|\(.*\)|\.+)$/i;
+// Whisper's silence hallucinations: what its training data says when nothing is said. A bare
+// "thank you" or "bye" is on the list by choice (Liran, 2026-09-21): his thanks to an agent come
+// with words, never bare, so a bare one is noise, and none of these should ever wake the agent.
+const HALLUCINATIONS = /^(you|oops|thank you|thanks|thank you very much|thanks for watching|bye|goodbye|תודה|תודה רבה|subtitles by .*|תרגום .*|כתוביות .*|\[.*\]|\(.*\)|\.+)[.!]*$/i;
 const whisperReady = async (onStage) => {
   if (!WHISPER_URL && !whisper) { startWhisper(); onStage?.('loading the ear (Whisper)'); }
   for (let i = 0; i < 60; i++) {
@@ -421,16 +424,39 @@ const whisperReady = async (onStage) => {
   }
   throw new Error('whisper did not come up');
 };
-const transcribe = async (wav, onStage) => {
+// A short recording gets `verbose_json` instead of `json`: same transcription, but whisper also
+// reports per-word probabilities, the segment log-probabilities and the language it detected —
+// the evidence the garbage check is given. It costs nothing but a bigger response, so it is asked
+// for only where it is used. Returns { text, evidence }; the hallucination filter runs first in
+// both cases, and a filtered turn has no text and therefore nothing to check.
+const evidenceFrom = (body) => {
+  const segs = Array.isArray(body?.segments) ? body.segments : [];
+  const words = [];
+  for (const s of segs) for (const w of (Array.isArray(s.words) ? s.words : [])) {
+    if (words.length >= 40) break;   // a cap: the state is prose, not a dump
+    const p = Number(w.probability);
+    if (Number.isFinite(p)) words.push({ word: String(w.word ?? '').trim(), p: Math.round(p * 1000) / 1000 });
+  }
+  const lps = segs.map((s) => Number(s.avg_logprob)).filter(Number.isFinite);
+  return {
+    words,
+    avgLogprob: lps.length ? Math.round((lps.reduce((a, b) => a + b, 0) / lps.length) * 1000) / 1000 : null,
+    language: body?.detected_language ?? null,
+    languageP: Number.isFinite(Number(body?.detected_language_probability)) ? Number(body.detected_language_probability) : null,
+  };
+};
+const transcribe = async (wav, onStage, { verbose = false } = {}) => {
   await whisperReady(onStage);
   const form = new FormData();
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
-  form.append('response_format', 'json');
+  form.append('response_format', verbose ? 'verbose_json' : 'json');
   form.append('temperature', '0');
   const res = await fetch(`${WHISPER_BASE()}/inference`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`whisper ${res.status}`);
-  const text = String((await res.json()).text || '').replace(/\s+/g, ' ').trim();
-  return HALLUCINATIONS.test(text) ? '' : text;
+  const body = await res.json();
+  const text = String(body.text || '').replace(/\s+/g, ' ').trim();
+  if (HALLUCINATIONS.test(text)) return { text: '', evidence: null };
+  return { text, evidence: verbose ? evidenceFrom(body) : null };
 };
 
 // ---------- tts ----------
@@ -561,9 +587,11 @@ const isAway = () => {
 const setAway = (on) => { writeJson(AWAY_FILE, { away: on }); awayMtime = null; };
 // Where the router's shadow log goes; bin/router-report reads it back against transcript.jsonl.
 const ROUTER_FILE = path.join(STATE, 'router.jsonl');
-// The last few user turns, for the state Jev is shown — "turn it off" only means anything in
-// context. Kept in memory: a restart starting cold here costs nothing.
+// The last few exchanges, for the state Jev is shown — "turn it off", and a bare "yes", only
+// mean anything next to what was said before, on both sides. Each entry is { user, agent }.
+// Kept in memory: a restart starting cold here costs nothing.
 const recentTurns = [];
+const rememberTurn = (user, agent) => { recentTurns.push({ user, agent: String(agent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) }); if (recentTurns.length > 3) recentTurns.shift(); };
 
 let localQueue = Promise.resolve();
 let localTurn = 0;
@@ -727,12 +755,16 @@ const handleTurn = async (req, res) => {
   const started = Date.now();
   let trace = null;   // the router's per-turn trace, filled as the turn runs and written in finally
   try {
-    let text, lang, inputAudio;
+    let text, lang, inputAudio, duration = null, evidence = null;
     if ((req.headers['content-type'] || '').startsWith('audio/')) {
       const wav = await readBody(req, 20e6);
       inputAudio = wav;
       send({ type: 'status', text: 'transcribing' });
-      text = await transcribe(wav, (stage) => send({ type: 'status', text: stage, startup: true }));
+      // The duration gate, decided from the header before a byte is sent: a short recording is
+      // the only kind that can be whisper garbage, and it is the only kind transcribed verbosely.
+      duration = wavDurationS(wav);
+      const short = duration != null && duration < routerConfig().short_max_s;
+      ({ text, evidence } = await transcribe(wav, (stage) => send({ type: 'status', text: stage, startup: true }), { verbose: short }));
       if (!text) { log(`ignored: nothing usable in ${wav.length} bytes of audio`); send({ type: 'ignored' }); return; }
       lang = detectLang(text);
       send({ type: 'transcript', text });
@@ -756,9 +788,37 @@ const handleTurn = async (req, res) => {
     if (routerMode() !== 'off') {
       // One line per turn, written in the finally below so it holds the whole chain: what Jev
       // was asked and answered, what was routed, and what Claude then did.
-      trace = { turn_id: turnId, at: new Date(started).toISOString(), text, lang, away: isAway(), tv_on: tvIsOn(), t: { text_ready: new Date().toISOString() } };
+      const cfg = routerConfig();
+      // Only a transcribed turn can be whisper garbage; something typed on the phone is
+      // deliberate, has no duration, and skips the gate entirely.
+      const short = duration != null && duration < cfg.short_max_s;
+      trace = { turn_id: turnId, at: new Date(started).toISOString(), text, lang, away: isAway(), tv_on: tvIsOn(), config: cfg, audio: inputAudio ? { duration_s: duration == null ? null : Math.round(duration * 100) / 100, short } : null, t: { text_ready: new Date().toISOString() } };
+      // Step one of the gate: the garbage check, its own Jev request, short recordings only. A
+      // dropped turn ends here — no intent question, no Claude, nothing spoken.
+      if (short) {
+        const g = await garbageCheck({ text, lang, duration, ...(evidence || {}), recent: recentTurns }, { log });
+        trace.mode = g.mode;
+        trace.garbage = g.garbage;
+        trace.addressed = g.addressed ?? null;
+        trace.complete = g.complete ?? null;
+        trace.t.garbage_sent = g.garbage?.sent_at ?? null;
+        trace.t.garbage_done = g.garbage?.done_at ?? null;
+        if (g.drop) {
+          // Jev is sure this was not readable speech (`garbage`: a scramble, a misclick) or not
+          // an utterance at all (`fragment`: a false start, a stray word). The turn ends exactly
+          // as an empty transcription does, but it is still logged, at cost 0, so it can be read
+          // back afterwards.
+          const reason = g.reason || 'garbage';
+          trace.routed = 'dropped';
+          trace.drop_reason = reason;
+          fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: `<router:dropped:${reason}>`, spoken: '', ms: Date.now() - started, cost: 0, routed: 'dropped', drop_reason: reason }) + '\n');
+          trace.result = { by: 'router', spoken: '', cost: 0, ms: Date.now() - started };
+          send({ type: 'ignored' });
+          return;
+        }
+      }
       const { mode, decision, action, error, jev } = await routeTurn(
-        { text, lang, away: trace.away, tvOn: trace.tv_on, recent: recentTurns },
+        { text, lang, typed: !inputAudio, away: trace.away, tvOn: trace.tv_on, recent: recentTurns },
         { setAway, log },
       );
       trace.mode = mode;
@@ -792,14 +852,17 @@ const handleTurn = async (req, res) => {
         fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: `<router:${routedLabel}>`, spoken: action.say, ms: Date.now() - started, cost: 0, routed: routedLabel }) + '\n');
         log(`turn routed ${Date.now() - started}ms label=${routedLabel} cost=$0.000`);
         trace.result = { by: 'router', spoken: action.say, cost: 0, ms: Date.now() - started };
-        recentTurns.push(text); if (recentTurns.length > 3) recentTurns.shift();
+        rememberTurn(text, action.say);
         send({ type: 'done' });
         pruneAudio();
         return;
       }
       if (action?.claudeText) agentInput = action.claudeText;   // still a Claude turn, a deterministic one
     }
-    recentTurns.push(text); if (recentTurns.length > 3) recentTurns.shift();
+    // Recorded now so the router sees it next turn even if Claude fails; the reply is filled in
+    // below once it exists.
+    rememberTurn(text, '');
+    const thisTurn = recentTurns[recentTurns.length - 1];
     const first = !claudeSession().id;
     send({ type: 'status', text: first ? 'waking up' : 'thinking' });
     warmTts(lang);
@@ -818,6 +881,7 @@ const handleTurn = async (req, res) => {
     let spoken = await speaker.finish();
     if (!spoken) spoken = await speakFallback(turn.text, lang, send, markFirstAudio);
     send({ type: 'text', text: spoken, full: turn.text });
+    thisTurn.agent = String(spoken || turn.text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
     fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: turn.text, spoken, ms: Date.now() - started, cost: turn.cost, ...(routedLabel ? { routed: routedLabel } : {}) }) + '\n');
     log(`turn ok ${Date.now() - started}ms first-audio=${firstAudioAt ? firstAudioAt - started : '-'}ms sentences=${speaker.count} cost=$${(turn.cost || 0).toFixed(3)} session=${turn.sessionId}`);
     send({ type: 'done' });
@@ -904,6 +968,10 @@ const server = http.createServer(async (req, res) => {
       // would render it into the fresh conversation) even after the reset button was pressed.
       try { fs.rmSync(TRANSCRIPT, { force: true }); } catch {}
       eventLog = [];
+      // The router's memory of the last exchanges goes with it: a new conversation is cold for Jev
+      // exactly as it is for Claude, or a bare "yes" would be judged against a conversation that no
+      // longer exists.
+      recentTurns.length = 0;
       log(`session reset (was ${old.id}, ${old.turns} turns)`);
       return json(res, 200, { ok: true });
     }
@@ -996,6 +1064,7 @@ server.listen(PORT, HOST, () => {
     log(`VOICE_SPEECH_REWRITE=${rewriteRaw} is not on|off; treating as on`);
   }
   log(`voice server on http://${HOST}:${PORT} root=${ROOT} lang=${VOICE_LANG} speech-rewrite=${SPEECH_REWRITE_ON ? 'on' : 'off'}`);
+  setRouterLog(log);   // so a broken router.json is announced in the server's own log
   warmRouter().then((r) => { if (r) log(`router: jev warm (${r.status}, ${r.ms}ms, mode=${routerMode()})`); }, (e) => log(`router: warm-up failed: ${e.message}`));
   // Node drops an idle keep-alive after 4 s and a cold call to Jev costs ~400 ms more than a warm
   // one (measured: 290 ms pinged vs 800 ms cold), so while a conversation is live the connection
