@@ -53,6 +53,11 @@ const SPEECH_REWRITE_ON = parseOnOff(process.env.VOICE_SPEECH_REWRITE, true);
 // The claude CLI's permission mode for the voice agent. acceptEdits (upstream default) applies
 // edits without asking; auto lets Claude Code's own auto mode decide instead.
 const PERMISSION_MODE = process.env.VOICE_PERMISSION_MODE || 'acceptEdits';
+// The machine's own persona file (VOICE_PERSONA in config.env), appended to the voice prompt.
+// Who the agent is and what it may do belong to the folder it runs in, not to this project, and
+// a file it is told to go and read is a file it can skip - so it is spliced into the system
+// prompt instead. Unset: the shipped voice prompt is the whole of it, exactly as before.
+const PERSONA_FILE = (process.env.VOICE_PERSONA || '').trim();
 // Whether an input-hook command is configured, so its log lines only appear when it's in use.
 const INPUT_HOOK_CONFIGURED = Boolean((process.env.VOICE_ON_INPUT || '').trim());
 // By design: the voice agent is not limited on the machine — the same tools a session has, minus the secrets (denied below).
@@ -199,10 +204,23 @@ const TURN_TIMEOUT_MS = 15 * 60 * 1000;
 const RESPAWN = { minMs: 2000, maxMs: 5 * 60 * 1000, stableMs: 60 * 1000 };
 let respawnDelay = RESPAWN.minMs;
 let respawnTimer = null;
+const VOICE_PROMPT = path.join(HERE, 'voice-mode.md');
+const SYSTEM_PROMPT_FILE = path.join(STATE, 'system-prompt.md');
+// Built per spawn, not per install: editing the persona file and restarting is enough to change
+// the agent. An unreadable persona file is logged and skipped - a typo in a path must not leave
+// the voice channel with no agent at all.
+const systemPromptFile = () => {
+  if (!PERSONA_FILE) return VOICE_PROMPT;
+  let persona;
+  try { persona = fs.readFileSync(PERSONA_FILE, 'utf8'); }
+  catch (e) { log(`persona: ${PERSONA_FILE} unreadable (${e.code}) - voice prompt only`); return VOICE_PROMPT; }
+  fs.writeFileSync(SYSTEM_PROMPT_FILE, `${fs.readFileSync(VOICE_PROMPT, 'utf8').trimEnd()}\n\n${persona.trim()}\n`);
+  return SYSTEM_PROMPT_FILE;
+};
 const claudeArgs = (session, newId) => {
   const args = [
     '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
-    '--append-system-prompt-file', path.join(HERE, 'voice-mode.md'),
+    '--append-system-prompt-file', systemPromptFile(),
     '--permission-mode', PERMISSION_MODE,
     '--allowedTools', ...ALLOWED_TOOLS,
     '--settings', PERMISSION_SETTINGS,
