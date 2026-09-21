@@ -120,3 +120,29 @@ covers what that combination means; nothing extra to add here.
 and confirm it behaves as the chosen mode implies.
 
 **Restart:** required.
+
+## e. Jev router
+
+A typed decision taken before the agent is asked anything: one Choice question to Jev (TypeSafe
+AI) per turn, answered in 70–500 ms, deciding whether the turn is a fixed procedure (away mode, a
+TV command, relay mode) or an ordinary conversation. A routed turn speaks a fixed line from
+`app/router-lines.json` and never costs a Claude turn; everything else goes to the agent
+untouched. Jev missing, slow (> 800 ms) or wrong never fails a turn — it just means Claude.
+
+**Config:**
+
+    JEV_API_KEY=<key>            # a TypeSafe AI key; without it the router is inert
+    JEV_ROUTER=shadow|on|off     # default off
+    #JEV_ROUTE_MIN=0.85          # the confidence a label needs before anything is routed
+
+`shadow` asks Jev on every turn and writes the answer to `<state dir>/router.jsonl` without
+routing anything — the way to see how it would have behaved before trusting it. `on` routes per
+the rule above. `off` makes no call at all.
+
+**Working folder:** none required. The TV procedures talk to tv-remote's local JSON API
+(`127.0.0.1:4470`); without that service they fall back to a fixed "couldn't reach the TV" line.
+
+**Verify:** `JEV_ROUTER=shadow`, restart, speak a few turns, then `bin/router-report` for the
+per-turn table and `bin/router-report turn last` for one turn's full timeline.
+
+**Restart:** required.

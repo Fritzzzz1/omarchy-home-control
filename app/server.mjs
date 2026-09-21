@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBody } from './request-body.mjs';
 import { runInputHook } from './input-hook.mjs';
+import { routeTurn, routerMode, tvIsOn, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
@@ -336,7 +337,8 @@ const runTurn = (text, onEvent) => new Promise((resolve, reject) => {
     }
     if (ev.type === 'assistant') {
       for (const block of ev.message?.content || []) {
-        if (block.type === 'tool_use') onEvent({ type: 'status', text: describeTool(block) });
+        // `tool` rides along for the router's trace; the phone only ever reads `text`.
+        if (block.type === 'tool_use') onEvent({ type: 'status', text: describeTool(block), tool: block.name });
         if (block.type === 'text' && block.text) { lastText = block.text; onEvent({ type: 'partial', text: block.text }); }
       }
     }
@@ -553,6 +555,16 @@ const isAway = () => {
   awayCache = mtime === null ? false : !!readJson(AWAY_FILE, {}).away;
   return awayCache;
 };
+// The only writer of the away flag besides the agent's own file edits: the router's away
+// procedures. Clearing the cached mtime makes the next isAway() re-read rather than trust a
+// write that landed inside the same millisecond.
+const setAway = (on) => { writeJson(AWAY_FILE, { away: on }); awayMtime = null; };
+// Where the router's shadow log goes; bin/router-report reads it back against transcript.jsonl.
+const ROUTER_FILE = path.join(STATE, 'router.jsonl');
+// The last few user turns, for the state Jev is shown — "turn it off" only means anything in
+// context. Kept in memory: a restart starting cold here costs nothing.
+const recentTurns = [];
+
 let localQueue = Promise.resolve();
 let localTurn = 0;
 let localChild = null;
@@ -713,6 +725,7 @@ const handleTurn = async (req, res) => {
   // a second time.
   const send = (ev) => { const entry = logEvent(turnId, ev); sendRaw({ ...ev, id: entry.id }); };
   const started = Date.now();
+  let trace = null;   // the router's per-turn trace, filled as the turn runs and written in finally
   try {
     let text, lang, inputAudio;
     if ((req.headers['content-type'] || '').startsWith('audio/')) {
@@ -735,24 +748,92 @@ const handleTurn = async (req, res) => {
     // it ran after the machine finished speaking instead of right away). No local var to hold it
     // in past this call, so its audio reference is dropped as soon as the hook is handed off.
     if (INPUT_HOOK_CONFIGURED) runInputHook({ at: new Date(started).toISOString(), text, audio: inputAudio }).then(() => log('input hook: ran'), (e) => log(`input hook: failed: ${e.message}`));
+    // The Jev router, between the input hook and Claude: a typed decision on what this turn is.
+    // In shadow it only writes a line to router.jsonl. In `on` a confident fixed-procedure label
+    // either answers the turn here (say) or narrows what Claude is asked (claudeText). Any
+    // failure at all leaves `agentInput` as the user's own words and the turn runs as before.
+    let agentInput = text, routedLabel = null;
+    if (routerMode() !== 'off') {
+      // One line per turn, written in the finally below so it holds the whole chain: what Jev
+      // was asked and answered, what was routed, and what Claude then did.
+      trace = { turn_id: turnId, at: new Date(started).toISOString(), text, lang, away: isAway(), tv_on: tvIsOn(), t: { text_ready: new Date().toISOString() } };
+      const { mode, decision, action, error, jev } = await routeTurn(
+        { text, lang, away: trace.away, tvOn: trace.tv_on, recent: recentTurns },
+        { setAway, log },
+      );
+      trace.mode = mode;
+      trace.jev = jev;
+      trace.t.jev_sent = jev?.sent_at ?? null;
+      trace.t.jev_done = jev?.done_at ?? null;
+      trace.intent = decision?.intent ?? null;
+      trace.confidence = decision?.confidence ?? null;
+      trace.tv_action = decision?.tv_action ?? null;
+      trace.level = decision?.level ?? null;
+      trace.probabilities = decision?.probabilities ?? null;
+      trace.error = error || null;
+      trace.routed = action ? decision.intent : null;
+      if (action) {
+        routedLabel = decision.intent;
+        send({ type: 'routed', label: routedLabel });
+        log(`routed: ${routedLabel}${decision.tv_action ? `/${decision.tv_action}` : ''} conf=${decision.confidence.toFixed(2)} jev=${decision.ms}ms`);
+      }
+      if (action?.say) {
+        const audio = await speak(action.say, lang);
+        if (audio) emitAudio(send, audio, 0, action.say);
+        send({ type: 'text', text: action.say, full: action.say });
+        // After the line is out: away mode silences these speakers, so the order matters. For
+        // away_on "out" means finished playing on this machine (its speakers are the TV that
+        // `after` switches off), so drain localQueue first, capped so a stuck player can't hold
+        // the TV on.
+        if (action.waitForSpeakers) await Promise.race([localQueue.catch(() => {}), new Promise((r) => setTimeout(r, SPEAKERS_DRAIN_CAP_MS))]);
+        if (action.after) await action.after();
+        // cost 0 and an agent field that names the router, so the dashboard's analytics still
+        // count the turn and a routed turn is visible as one.
+        fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: `<router:${routedLabel}>`, spoken: action.say, ms: Date.now() - started, cost: 0, routed: routedLabel }) + '\n');
+        log(`turn routed ${Date.now() - started}ms label=${routedLabel} cost=$0.000`);
+        trace.result = { by: 'router', spoken: action.say, cost: 0, ms: Date.now() - started };
+        recentTurns.push(text); if (recentTurns.length > 3) recentTurns.shift();
+        send({ type: 'done' });
+        pruneAudio();
+        return;
+      }
+      if (action?.claudeText) agentInput = action.claudeText;   // still a Claude turn, a deterministic one
+    }
+    recentTurns.push(text); if (recentTurns.length > 3) recentTurns.shift();
     const first = !claudeSession().id;
     send({ type: 'status', text: first ? 'waking up' : 'thinking' });
     warmTts(lang);
     let firstAudioAt = 0;
     const markFirstAudio = () => { if (!firstAudioAt) firstAudioAt = Date.now(); };
     const speaker = makeSpeaker((ev) => { markFirstAudio(); send(ev); }, lang);
-    const turn = await runTurn(text, (ev) => (ev.type === 'delta' ? speaker.feed(ev.text) : send(ev)));
+    const tools = [];
+    const turn = await runTurn(agentInput, (ev) => {
+      if (trace) {
+        trace.t.claude_first_event ||= new Date().toISOString();
+        if (ev.tool) tools.push(ev.tool);
+      }
+      return ev.type === 'delta' ? speaker.feed(ev.text) : send(ev);
+    });
+    if (trace) trace.result = { by: 'claude', input: agentInput, text: turn.text, tools, cost: turn.cost ?? 0, ms: Date.now() - started };
     let spoken = await speaker.finish();
     if (!spoken) spoken = await speakFallback(turn.text, lang, send, markFirstAudio);
     send({ type: 'text', text: spoken, full: turn.text });
-    fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: turn.text, spoken, ms: Date.now() - started, cost: turn.cost }) + '\n');
+    fs.appendFileSync(TRANSCRIPT, JSON.stringify({ at: new Date().toISOString(), user: text, agent: turn.text, spoken, ms: Date.now() - started, cost: turn.cost, ...(routedLabel ? { routed: routedLabel } : {}) }) + '\n');
     log(`turn ok ${Date.now() - started}ms first-audio=${firstAudioAt ? firstAudioAt - started : '-'}ms sentences=${speaker.count} cost=$${(turn.cost || 0).toFixed(3)} session=${turn.sessionId}`);
     send({ type: 'done' });
     pruneAudio();
   } catch (e) {
     log(`turn failed: ${e.message}`);
+    if (trace) trace.error = trace.error || e.message;
     send({ type: 'error', text: e.message });
   } finally {
+    // One trace line per turn, whatever happened to it — including a turn that failed.
+    if (trace) {
+      if (trace.result?.by === 'claude') trace.t.claude_done = trace.t.claude_done || new Date().toISOString();
+      trace.t.turn_done = new Date().toISOString();
+      trace.total_ms = Date.now() - started;
+      logRouterTurn(ROUTER_FILE, trace);
+    }
     // The phone reopens its mic once this response ends (its own queue already drained by
     // then). If we ended it while this machine's speakers were still playing this turn's
     // sentences, the mic would come on mid-playback and hear itself. Waiting for localQueue
@@ -915,4 +996,9 @@ server.listen(PORT, HOST, () => {
     log(`VOICE_SPEECH_REWRITE=${rewriteRaw} is not on|off; treating as on`);
   }
   log(`voice server on http://${HOST}:${PORT} root=${ROOT} lang=${VOICE_LANG} speech-rewrite=${SPEECH_REWRITE_ON ? 'on' : 'off'}`);
+  warmRouter().then((r) => { if (r) log(`router: jev warm (${r.status}, ${r.ms}ms, mode=${routerMode()})`); }, (e) => log(`router: warm-up failed: ${e.message}`));
+  // Node drops an idle keep-alive after 4 s and a cold call to Jev costs ~400 ms more than a warm
+  // one (measured: 290 ms pinged vs 800 ms cold), so while a conversation is live the connection
+  // is pinged every 3 s, the same idea as the TTS warm-up above. Quiet once the turns stop.
+  setInterval(() => { if (lastTurnAt && Date.now() - lastTurnAt < IDLE.ttsWarmMs) warmRouter().catch(() => {}); }, 3000);
 });

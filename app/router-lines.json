@@ -1,0 +1,13 @@
+{
+  "away_on": { "he": "מצב היעדרות מופעל.", "en": "Away mode on." },
+  "away_off": { "he": "מצב היעדרות בוטל.", "en": "Away mode off." },
+  "tv.mute": { "he": "השתקתי את הטלוויזיה.", "en": "TV muted." },
+  "tv.unmute": { "he": "ביטלתי את ההשתקה.", "en": "TV unmuted." },
+  "tv.volume_up": { "he": "הגברתי.", "en": "Volume up." },
+  "tv.volume_down": { "he": "הנמכתי.", "en": "Volume down." },
+  "tv.volume_set": { "he": "עוצמה {level}.", "en": "Volume {level}." },
+  "tv.power_off": { "he": "כיביתי את הטלוויזיה.", "en": "TV off." },
+  "tv.power_on": { "he": "הדלקתי את הטלוויזיה.", "en": "TV on." },
+  "tv.hdmi1": { "he": "עברתי ל-HDMI 1.", "en": "Switched to HDMI 1." },
+  "tv.failed": { "he": "לא הצלחתי להגיע לטלוויזיה.", "en": "I couldn't reach the TV." }
+}

@@ -320,6 +320,12 @@ VOICE_PEER_DELEGATION=$PEER_DELEGATION
 # See setup/PLUGINS.md.
 #VOICE_AWAY=on
 
+# Optional: the Jev router — a typed decision per turn (away mode, TV, relay) taken before the
+# agent, so fixed procedures don't cost a full turn. shadow = ask and log only. See setup/PLUGINS.md.
+#JEV_API_KEY=
+#JEV_ROUTER=shadow
+#JEV_ROUTE_MIN=0.85
+
 # Used by home-control-ctl to build the phone URL.
 HOME_CONTROL_TAILNET_HOST=$TAILNET_HOST
 HOME_CONTROL_TAILNET_PORT=$TAILNET_PORT

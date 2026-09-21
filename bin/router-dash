@@ -1,0 +1,321 @@
+#!/usr/bin/env node
+// Live dashboard for the Jev router log. Read-only, single file, no deps.
+// Serves HTML + /api/turns on 127.0.0.1:4492, reading router.jsonl fresh each request.
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import http from 'node:http';
+
+const LABEL = process.env.VOICE_LABEL || 'home';
+const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'home-control', 'state', LABEL);
+const ROUTER_FILE = path.join(STATE, 'router.jsonl');
+const PORT = 4492;
+const HOST = '127.0.0.1';
+
+function readTurns() {
+  if (!fs.existsSync(ROUTER_FILE)) return [];
+  const lines = fs.readFileSync(ROUTER_FILE, 'utf8').split('\n');
+  const out = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* skip malformed/half-written last line */ }
+  }
+  return out;
+}
+
+const pct = (xs, p) => {
+  if (!xs.length) return null;
+  const s = xs.slice().sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(p * s.length))];
+};
+
+function buildSummary(rows) {
+  const jevMs = rows.map((t) => t.jev?.ms).filter((x) => x != null);
+  const jevErrors = rows.filter((t) => t.jev?.error).length;
+  const jevOk = rows.filter((t) => t.jev && !t.jev.error).length;
+  const routed = rows.filter((t) => t.routed).length;
+  const byJev = rows.filter((t) => t.result?.by === 'router').length;
+  const byClaude = rows.filter((t) => t.result?.by === 'claude').length;
+  const modes = {};
+  for (const t of rows) { const m = t.mode || '-'; modes[m] = (modes[m] || 0) + 1; }
+  return {
+    turns: rows.length,
+    jev_ok: jevOk,
+    jev_errors: jevErrors,
+    routed,
+    by_jev: byJev,
+    by_claude: byClaude,
+    p50: pct(jevMs, 0.5),
+    p95: pct(jevMs, 0.95),
+    modes,
+  };
+}
+
+const server = http.createServer((req, res) => {
+  const url = req.url.split('?')[0];
+  if (url === '/api/turns') {
+    let rows;
+    try { rows = readTurns(); } catch (e) { res.writeHead(500); res.end(String(e)); return; }
+    rows = rows.slice(-300).reverse(); // newest first
+    const body = JSON.stringify({ summary: buildSummary(rows), turns: rows });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(body);
+    return;
+  }
+  if (url === '/' || url === '/index.html') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(PAGE);
+    return;
+  }
+  res.writeHead(404);
+  res.end('not found');
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`router-dash listening on http://${HOST}:${PORT}  (reading ${ROUTER_FILE})`);
+});
+
+const PAGE = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jev Router Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --panel2: #1c2230; --border: #2a3040;
+    --text: #e6edf3; --dim: #8b98a8; --accent: #4f9eff; --good: #3fb950;
+    --bad: #f85149; --warn: #d29922; --bar-bg: #262c38;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--panel);
+    border-bottom: 1px solid var(--border); padding: 10px 20px;
+    display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .stat { display: flex; flex-direction: column; gap: 1px; }
+  .stat .v { font-size: 16px; font-weight: 600; }
+  .stat .l { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .03em; }
+  .stat .v.bad { color: var(--bad); }
+  .stat .v.good { color: var(--good); }
+  #turns {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+    gap: 10px; padding: 14px 20px; align-items: start;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; min-width: 0;
+  }
+  .card.err { border-color: #6e2126; }
+  .card { border-left: 4px solid var(--border); }
+  .card.by-jev { border-left-color: var(--good); }
+  .card.by-claude { border-left-color: #6e7684; }
+  .card.by-claude-err { border-left-color: var(--warn); }
+  .card.new { animation: flash 1.8s ease-out; }
+  .top-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .02em;
+    padding: 3px 9px; border-radius: 5px; margin-bottom: 6px;
+  }
+  .top-badge.by-jev { background: #123822; color: var(--good); }
+  .top-badge.by-claude { background: #262c38; color: #b8c2d0; }
+  .top-badge.by-claude-err { background: #3a2f10; color: var(--warn); }
+  .filters { display: flex; gap: 6px; margin-left: auto; }
+  .filters button {
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+  }
+  .filters button.active { background: var(--accent); color: #06121f; border-color: var(--accent); }
+  @keyframes flash { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+  .card .row1 { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); font-size: 11px; }
+  .said { font-size: 14px; margin: 4px 0 6px; line-height: 1.35; }
+  .meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--dim); font-size: 11px; margin-bottom: 6px; }
+  .intent-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .intent-label { font-weight: 600; min-width: 90px; }
+  .bar-wrap { flex: 1; background: var(--bar-bg); border-radius: 3px; height: 14px; position: relative; overflow: hidden; }
+  .bar-fill { background: var(--accent); height: 100%; border-radius: 3px; }
+  .bar-wrap .pct { position: absolute; right: 4px; top: 0; font-size: 10px; line-height: 14px; color: var(--text); }
+  .probs { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 6px; }
+  .prob-row { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--dim); }
+  .prob-row .name { min-width: 76px; text-align: right; }
+  .prob-row .bar-wrap { height: 8px; }
+  .prob-row .bar-fill { background: #3a4256; }
+  .tv-info { font-size: 11px; color: var(--warn); margin-bottom: 4px; }
+  .err-line { color: var(--bad); font-weight: 600; font-size: 12px; margin: 4px 0; }
+  .claude-block { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
+  .claude-block .badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px;
+    background: var(--panel2); color: var(--dim); margin-right: 6px;
+  }
+  .claude-block .badge.routed { background: #123; color: var(--good); }
+  .reply { margin: 4px 0; }
+  .tools { color: var(--dim); font-size: 11px; }
+  .timeline { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; font-size: 10px; color: var(--dim); }
+  .timeline .step { background: var(--panel2); border-radius: 4px; padding: 2px 6px; }
+  details.state { margin-top: 6px; }
+  details.state summary { cursor: pointer; color: var(--dim); font-size: 11px; }
+  details.state pre {
+    white-space: pre-wrap; word-break: break-word; background: var(--panel2);
+    border-radius: 4px; padding: 6px 8px; font-size: 11px; margin: 4px 0 0; color: var(--dim);
+    max-height: 240px; overflow: auto;
+  }
+  .req-id { color: var(--dim); font-size: 10px; }
+  .empty { color: var(--dim); padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<header id="header"><h1>Jev Router</h1></header>
+<div id="turns"><div class="empty">Loading…</div></div>
+<script>
+const seen = new Set();
+let first = true;
+let filter = 'all'; // all | jev | claude
+
+function turnKind(t) {
+  if (t.result?.by === 'router') return 'by-jev';
+  if (t.error || t.jev?.error) return 'by-claude-err';
+  return 'by-claude';
+}
+function setFilter(f) { filter = f; renderTurns(window.__lastTurns || []); }
+window.setFilter = setFilter;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+function since(a, b) {
+  if (!a || !b) return null;
+  return Date.parse(b) - Date.parse(a);
+}
+function probBar(label, p, max) {
+  const pct = max > 0 ? Math.round((p / max) * 100) : 0;
+  return \`<div class="prob-row"><div class="name">\${esc(label)}</div><div class="bar-wrap"><div class="bar-fill" style="width:\${pct}%"></div></div><div style="width:32px">\${Number(p).toFixed(2)}</div></div>\`;
+}
+
+function renderHeader(summary) {
+  const modeStr = Object.entries(summary.modes || {}).map(([k, v]) => \`\${k}:\${v}\`).join(' ');
+  document.getElementById('header').innerHTML = \`
+    <h1>Jev Router</h1>
+    <div class="stat"><div class="v">\${summary.turns}</div><div class="l">turns</div></div>
+    <div class="stat"><div class="v good">\${summary.jev_ok}</div><div class="l">jev ok</div></div>
+    <div class="stat"><div class="v \${summary.jev_errors ? 'bad' : ''}">\${summary.jev_errors}</div><div class="l">jev errors</div></div>
+    <div class="stat"><div class="v">\${summary.routed}</div><div class="l">routed</div></div>
+    <div class="stat"><div class="v good">\${summary.by_jev}</div><div class="l">by Jev</div></div>
+    <div class="stat"><div class="v">\${summary.by_claude}</div><div class="l">by Claude</div></div>
+    <div class="stat"><div class="v">\${summary.p50 ?? '-'}ms</div><div class="l">jev p50</div></div>
+    <div class="stat"><div class="v">\${summary.p95 ?? '-'}ms</div><div class="l">jev p95</div></div>
+    <div class="stat"><div class="v" style="font-size:12px">\${esc(modeStr)}</div><div class="l">mode</div></div>
+    <div class="stat"><div class="v" style="font-size:12px">routed by Jev \${summary.by_jev} / Claude \${summary.by_claude}</div><div class="l">split</div></div>
+    <div class="filters">
+      <button class="\${filter === 'all' ? 'active' : ''}" onclick="setFilter('all')">all</button>
+      <button class="\${filter === 'jev' ? 'active' : ''}" onclick="setFilter('jev')">routed</button>
+      <button class="\${filter === 'claude' ? 'active' : ''}" onclick="setFilter('claude')">claude</button>
+    </div>
+  \`;
+}
+
+function renderCard(t) {
+  const isNew = !seen.has(t.turn_id);
+  seen.add(t.turn_id);
+  const hasErr = !!(t.error || t.jev?.error);
+  const kind = turnKind(t);
+  let badgeText;
+  if (kind === 'by-jev') badgeText = 'JEV ROUTED · ' + (t.routed || t.intent || '-');
+  else if (kind === 'by-claude-err') badgeText = 'CLAUDE (jev error)';
+  else badgeText = 'CLAUDE';
+  let html = '';
+  html += \`<div class="top-badge \${kind}">\${esc(badgeText)}</div>\`;
+  html += \`<div class="row1"><span>\${fmtTime(t.at)}</span><span>\${esc(t.turn_id)}</span></div>\`;
+  html += \`<div class="said">\${esc(t.text)}</div>\`;
+  html += \`<div class="meta"><span>lang: \${esc(t.lang)}</span><span>away: \${t.away}</span><span>tv_on: \${t.tv_on}</span><span>mode: \${esc(t.mode)}</span>\${t.total_ms != null ? \`<span>total: \${t.total_ms}ms</span>\` : ''}</div>\`;
+
+  if (t.intent) {
+    const conf = Number(t.confidence || 0);
+    html += \`<div class="intent-row"><div class="intent-label">\${esc(t.intent)}</div><div class="bar-wrap"><div class="bar-fill" style="width:\${Math.round(conf*100)}%"></div><div class="pct">\${conf.toFixed(2)}</div></div></div>\`;
+    if (t.probabilities) {
+      const entries = Object.entries(t.probabilities).sort((a, b) => b[1] - a[1]);
+      const max = Math.max(1e-9, ...entries.map(([, v]) => v));
+      html += '<div class="probs">' + entries.map(([k, v]) => probBar(k, v, max)).join('') + '</div>';
+    }
+    if (t.intent === 'tv') {
+      html += \`<div class="tv-info">tv_action: \${esc(t.tv_action) || '-'}\${t.level != null ? \` · level: \${t.level}\` : ''}</div>\`;
+    }
+  }
+
+  const jevMs = t.jev?.ms != null ? \`\${t.jev.ms}ms\` : '-';
+  const reqId = t.jev?.request_id ? \`<span class="req-id">\${esc(t.jev.request_id)}</span>\` : '';
+  html += \`<div class="meta"><span>jev: \${jevMs}</span>\${reqId}</div>\`;
+  if (hasErr) {
+    html += \`<div class="err-line">error: \${esc(t.error || t.jev?.error)}</div>\`;
+  }
+
+  if (t.result || t.routed !== undefined) {
+    html += '<div class="claude-block">';
+    html += t.routed
+      ? \`<span class="badge routed">routed: \${esc(t.routed)}</span>\`
+      : '<span class="badge">not routed — Claude</span>';
+    if (t.result) {
+      html += \`<div class="reply">\${esc(t.result.spoken || t.result.text || '')}</div>\`;
+      html += \`<div class="tools">by: \${esc(t.result.by)}\${t.result.tools?.length ? ' · tools: ' + esc(t.result.tools.join(', ')) : ''} · \${t.result.ms}ms · $\${Number(t.result.cost || 0).toFixed(4)}</div>\`;
+    }
+    html += '</div>';
+  }
+
+  const steps = [];
+  const tt = t.t || {};
+  if (tt.text_ready) steps.push(['text ready', tt.text_ready, null]);
+  if (tt.jev_sent) steps.push(['jev sent', tt.jev_sent, tt.text_ready]);
+  if (tt.jev_done) steps.push(['jev done', tt.jev_done, tt.jev_sent]);
+  if (tt.claude_first_event) steps.push(['claude first', tt.claude_first_event, tt.jev_done]);
+  if (tt.claude_done) steps.push(['claude done', tt.claude_done, tt.claude_first_event]);
+  if (tt.turn_done) steps.push(['turn done', tt.turn_done, tt.claude_done || tt.jev_done]);
+  if (steps.length) {
+    html += '<div class="timeline">' + steps.map(([label, at, prev]) => {
+      const delta = since(prev, at);
+      return \`<span class="step">\${label} \${delta != null ? '+' + delta + 'ms' : ''}</span>\`;
+    }).join('') + '</div>';
+  }
+
+  if (t.jev?.state) {
+    html += \`<details class="state"><summary>state sent to Jev</summary><pre>\${esc(t.jev.state)}</pre></details>\`;
+  }
+
+  return \`<div class="card \${kind} \${hasErr ? 'err' : ''} \${isNew && !first ? 'new' : ''}" data-id="\${esc(t.turn_id)}">\${html}</div>\`;
+}
+
+function renderTurns(turns) {
+  const container = document.getElementById('turns');
+  const filtered = filter === 'all' ? turns : turns.filter((t) => (filter === 'jev') === (turnKind(t) === 'by-jev'));
+  if (!filtered.length) {
+    container.innerHTML = '<div class="empty">No turns match.</div>';
+  } else {
+    container.innerHTML = filtered.map(renderCard).join('');
+  }
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/turns');
+    const data = await res.json();
+    renderHeader(data.summary);
+    window.__lastTurns = data.turns;
+    renderTurns(data.turns);
+    first = false;
+  } catch (e) {
+    console.error(e);
+  }
+}
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>`;

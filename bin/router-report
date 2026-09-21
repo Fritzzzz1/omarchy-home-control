@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+// What the Jev router decided, read back from its own trace log next to what actually happened.
+//   router-report [n]            the last n turns (default 50): a table plus per-label counts
+//                                and latency p50/p95
+//   router-report turn <id|last> one turn, step by step, with the exact state sent to Jev
+// Read-only, and safe while the server is running.
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+const LABEL = process.env.VOICE_LABEL || 'home';
+const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'home-control', 'state', LABEL);
+const ROUTER_FILE = path.join(STATE, 'router.jsonl');
+const TRANSCRIPT = path.join(STATE, 'transcript.jsonl');
+
+const readJsonl = (file) => {
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+};
+const rows = readJsonl(ROUTER_FILE);
+if (!rows.length) { console.log(`No router log yet at ${ROUTER_FILE}. Set JEV_ROUTER=shadow and restart to start collecting.`); process.exit(0); }
+
+const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
+const pad = (s, n) => String(s ?? '').padEnd(n).slice(0, n);
+const time = (iso) => (iso ? new Date(iso).toISOString().slice(11, 23) : '-');
+const since = (a, b) => (a && b ? `+${Date.parse(b) - Date.parse(a)}ms` : '');
+
+// ---- one turn, step by step
+if (process.argv[2] === 'turn') {
+  const want = process.argv[3] || 'last';
+  const t = want === 'last' ? rows[rows.length - 1] : rows.find((r) => r.turn_id === want);
+  if (!t) { console.error(`No turn ${want} in ${ROUTER_FILE}`); process.exit(1); }
+  // The transcript row is written when the turn ends, so pick the nearest row after this
+  // turn's start with the same text — not the first within ten minutes, which matched an older
+  // repeat of the same phrase.
+  const t0 = Date.parse(t.at);
+  const turn = readJsonl(TRANSCRIPT)
+    .filter((x) => x.user === t.text && Date.parse(x.at) >= t0 && Date.parse(x.at) - t0 < 600000)
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))[0];
+  console.log(`turn ${t.turn_id}   ${t.at}   mode=${t.mode}   lang=${t.lang}   total=${t.total_ms ?? '-'}ms`);
+  console.log(`\n  said: ${t.text}`);
+  console.log(`  context: away=${t.away} tv_on=${t.tv_on}`);
+  console.log(`\n  ${time(t.t?.text_ready)}  text ready`);
+  console.log(`  ${time(t.t?.jev_sent)}  jev asked ${since(t.t?.text_ready, t.t?.jev_sent)}`);
+  console.log(`  ${time(t.t?.jev_done)}  jev answered ${since(t.t?.jev_sent, t.t?.jev_done)}${t.jev?.error ? `  ERROR: ${t.jev.error}` : ''}`);
+  if (t.jev?.request_id) console.log(`            request id ${t.jev.request_id}`);
+  if (t.jev?.usage) console.log(`            usage ${JSON.stringify(t.jev.usage)}`);
+  if (t.intent) {
+    console.log(`\n  intent: ${t.intent}  confidence ${Number(t.confidence).toFixed(3)}${t.tv_action ? `  tv_action ${t.tv_action}` : ''}${t.level != null ? `  level ${t.level}` : ''}`);
+    for (const [name, a] of Object.entries(t.jev?.answers || {})) {
+      const probs = a.probabilities ? Object.entries(a.probabilities).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${Number(v).toFixed(3)}`).join('  ') : '';
+      console.log(`    ${pad(name, 10)} ${a.choice ?? a.score ?? a.noul ?? ''}${probs ? `\n      ${probs}` : ''}`);
+    }
+  }
+  console.log(`\n  routed: ${t.routed || 'no — went to Claude'}`);
+  if (t.t?.claude_first_event) console.log(`  ${time(t.t.claude_first_event)}  claude first event ${since(t.t.jev_done, t.t.claude_first_event)}`);
+  if (t.t?.claude_done) console.log(`  ${time(t.t.claude_done)}  claude done ${since(t.t.claude_first_event, t.t.claude_done)}`);
+  console.log(`  ${time(t.t?.turn_done)}  turn done`);
+  if (t.result) {
+    console.log(`\n  answered by ${t.result.by} in ${t.result.ms}ms, cost $${Number(t.result.cost || 0).toFixed(4)}`);
+    if (t.result.input && t.result.input !== t.text) console.log(`  claude was asked: ${t.result.input}`);
+    if (t.result.tools?.length) console.log(`  tools: ${t.result.tools.join(', ')}`);
+    console.log(`  reply: ${clip(t.result.spoken || t.result.text, 400)}`);
+  }
+  if (t.error) console.log(`\n  error: ${t.error}`);
+  if (turn) console.log(`  transcript row: agent=${clip(turn.agent, 40)} cost=$${Number(turn.cost || 0).toFixed(4)} ms=${turn.ms}`);
+  console.log(`\n  --- state sent to jev ---\n${(t.jev?.state || '(none)').split('\n').map((l) => '  ' + l).join('\n')}`);
+  process.exit(0);
+}
+
+// ---- the table
+const n = Number(process.argv[2]) || 50;
+const recent = rows.slice(-n);
+const transcript = readJsonl(TRANSCRIPT);
+console.log(`${recent.length} turns from ${ROUTER_FILE}\n`);
+console.log(`${pad('turn', 12)} ${pad('when', 8)} ${pad('label', 13)} ${pad('conf', 5)} ${pad('jev', 6)} ${pad('routed', 7)} ${pad('said', 34)} claude did`);
+for (const t of recent) {
+  const turn = transcript.find((x) => x.user === t.text && Math.abs(Date.parse(x.at) - Date.parse(t.at)) < 600000);
+  const did = t.routed ? `(router) ${clip(t.result?.spoken, 30)}` : `$${Number(turn?.cost ?? t.result?.cost ?? 0).toFixed(3)} ${clip(turn?.spoken ?? t.result?.text, 30)}`;
+  console.log(`${pad(t.turn_id, 12)} ${pad(String(t.at).slice(11, 19), 8)} ${pad(t.intent || (t.error ? 'ERR' : '-'), 13)} ${pad(t.confidence != null ? Number(t.confidence).toFixed(2) : '-', 5)} ${pad(t.jev?.ms != null ? t.jev.ms + 'ms' : '-', 6)} ${pad(t.routed || '-', 7)} ${pad(clip(t.text, 34), 34)} ${did}`);
+}
+
+const pct = (xs, p) => (xs.length ? xs.slice().sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))] : 0);
+const byLabel = {};
+for (const t of recent) {
+  const k = t.intent || (t.error ? 'error' : 'none');
+  (byLabel[k] ||= { n: 0, routed: 0, conf: [], ms: [] });
+  byLabel[k].n++;
+  if (t.routed) byLabel[k].routed++;
+  if (t.confidence != null) byLabel[k].conf.push(Number(t.confidence));
+  if (t.jev?.ms != null) byLabel[k].ms.push(t.jev.ms);
+}
+console.log(`\n${pad('label', 14)} ${pad('turns', 6)} ${pad('routed', 7)} ${pad('conf avg', 9)} ${pad('p50', 7)} p95`);
+for (const [k, v] of Object.entries(byLabel).sort((a, b) => b[1].n - a[1].n)) {
+  const avg = v.conf.length ? (v.conf.reduce((a, b) => a + b, 0) / v.conf.length).toFixed(2) : '-';
+  console.log(`${pad(k, 14)} ${pad(v.n, 6)} ${pad(v.routed, 7)} ${pad(avg, 9)} ${pad(pct(v.ms, 0.5) + 'ms', 7)} ${pct(v.ms, 0.95)}ms`);
+}
+const all = recent.map((t) => t.jev?.ms).filter((x) => x != null);
+const errors = recent.filter((t) => t.jev?.error).length;
+console.log(`\njev latency overall: p50 ${pct(all, 0.5)}ms  p95 ${pct(all, 0.95)}ms  n=${all.length}   failures: ${errors}`);
+console.log(`routed: ${recent.filter((t) => t.routed).length}/${recent.length}`);

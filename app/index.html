@@ -24,7 +24,7 @@
 /* Session stats (turns/tokens/cost) + clear, above the transcript log. Wraps to two rows on a narrow phone rather than overflowing. */
 #statsBar{display:flex;gap:8px;padding:20px 26px 0;flex:none;flex-wrap:wrap}#statsBar .stat{flex:1;min-width:80px;background:#ffffff04;border:1px solid var(--line);border-radius:12px;padding:10px 8px;text-align:center}#statsBar .stat-label{font-size:9px;letter-spacing:1.4px;text-transform:uppercase;color:var(--dim)}#statsBar .stat-value{font-size:16px;font-weight:500;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#clearLog{flex:none;width:40px;border:1px solid var(--line);border-radius:12px;background:transparent;color:var(--dim);display:grid;place-items:center;padding:0}#clearLog svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#clearLog:hover{background:#ffffff0d;color:var(--ink)}
 /* One collapsible <details> per turn (user message + its agent reply), collapsed to a one-line preview by default. */
-.turn{border-bottom:1px solid var(--line);padding-bottom:14px}.turn:last-child{border-bottom:0;padding-bottom:0}.turn summary{cursor:pointer;list-style:none;display:flex;gap:6px;font-size:13px;color:var(--dim);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 0}.turn summary::-webkit-details-marker{display:none}.turn summary:before{content:'▸';flex:none}.turn[open] summary:before{content:'▾'}.turn .prev-user{color:var(--ink);overflow:hidden;text-overflow:ellipsis}.turn .prev-agent{color:var(--green);overflow:hidden;text-overflow:ellipsis}.turn[open] .prev-agent{display:none}.turn .msg{margin-top:10px}.turn.relay .prev-user{color:var(--dim);flex:none}
+.turn{border-bottom:1px solid var(--line);padding-bottom:14px}.turn:last-child{border-bottom:0;padding-bottom:0}.turn summary{cursor:pointer;list-style:none;display:flex;gap:6px;font-size:13px;color:var(--dim);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 0}.turn summary::-webkit-details-marker{display:none}.turn summary:before{content:'▸';flex:none}.turn[open] summary:before{content:'▾'}.turn .prev-user{color:var(--ink);overflow:hidden;text-overflow:ellipsis}.turn .prev-agent{color:var(--green);overflow:hidden;text-overflow:ellipsis}.turn[open] .prev-agent{display:none}.turn .msg{margin-top:10px}.turn.relay .prev-user{color:var(--dim);flex:none}.turn .routed{flex:none;font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:0 5px;align-self:center}
 /* The mute button is also held down (pause while held): no long-press menu, selection or scrolling on it. */
 #mute{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;touch-action:none}
 /* Under the mic icon, no words: a tap (dot and arrow) sends, a hold (pause bars) pauses. */
@@ -251,6 +251,14 @@ const startTurnGroup = (relay, from) => {
   if (!relay) currentGroup = group;
   return group;
 };
+// A turn the Jev router answered (or narrowed) carries a small tag on its row, so the transcript
+// shows at a glance what never reached Claude.
+const tagRouted = (label) => {
+  const group = currentGroup || startTurnGroup(false, '');
+  let tag = group.querySelector('.routed');
+  if (!tag) { tag = document.createElement('span'); tag.className = 'routed'; group.querySelector('summary').appendChild(tag); }
+  tag.textContent = 'routed: ' + label;
+};
 const add = (cls, body, relay = false, from = '') => {
   const group = cls === 'user' || relay || !currentGroup ? startTurnGroup(relay, from) : currentGroup;
   const d = document.createElement('div'); d.className = 'msg ' + cls; d.dir = 'auto'; d.textContent = body;
@@ -467,6 +475,7 @@ async function turn(init) {
         if (ev.type === 'ignored') { setMode('listening', "Didn't catch that"); return; }
         if (ev.type === 'transcript') { showHeard(ev.text); add('user', ev.text); setMode('thinking', 'Thinking'); }
         if (ev.type === 'status') setMode(ev.startup ? 'startup' : 'thinking', (ev.startup ? 'Starting up: ' : '') + ev.text.charAt(0).toUpperCase() + ev.text.slice(1));
+        if (ev.type === 'routed') tagRouted(ev.label);
         if (ev.type === 'text') renderTurnText(ev.full || ev.text);
         if (ev.type === 'audio') { enqueue({ id: ev.id, url: ev.url, span: addPiece(ev.text) }); playNext(mine); }
         if (ev.type === 'error') { setMode('error', ev.text); }
@@ -804,6 +813,8 @@ const handleCaughtUpEvent = async (ev) => {
     if (!busy) showHeard(ev.text);   // don't clobber a live reply that's rendering right now
   } else if (ev.type === 'audio') {
     (catchUpAudioByTurn[ev.turnId] ||= [])[ev.index] = { id: ev.id, url: ev.url, text: ev.text };
+  } else if (ev.type === 'routed') {
+    tagRouted(ev.label);
   } else if (ev.type === 'text') {
     playCatchUpAudio(ev.turnId, ev.full || ev.text, ev.from);   // not awaited: see playCatchUpAudio
   }
