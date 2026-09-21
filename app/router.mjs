@@ -172,26 +172,38 @@ const LEVEL = { type: 'score', instructions: 'The volume level the user asked fo
 // every caller treats a rejection as "go to Claude".
 // One low-level call, shared by both requests: the transport, the timeout and the error shape are
 // the same whichever questions are asked.
-async function ask(state, questions, { fetchImpl = globalThis.fetch, timeoutMs, apiKey = process.env.JEV_API_KEY, model } = {}) {
-  if (!apiKey) throw new Error('no JEV_API_KEY');
+// JEV_URL points at the one Jev process on this machine (~/dev/jev, 127.0.0.1:4493): it owns the
+// key, the warm connection and the shared trace. Unset, the call goes straight to TypeSafe as
+// before, so nothing here depends on that server being up to stay testable.
+async function ask(state, questions, { fetchImpl = globalThis.fetch, timeoutMs, apiKey = process.env.JEV_API_KEY, model, task = 'router', text = null } = {}) {
   const cfg = routerConfig();
+  const local = process.env.JEV_URL;
+  if (!local && !apiKey) throw new Error('no JEV_API_KEY');
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs ?? cfg.timeout_ms);
+  const ms = timeoutMs ?? cfg.timeout_ms;
+  const timer = setTimeout(() => ac.abort(), ms);
   const started = Date.now();
   try {
-    const res = await fetchImpl(ENDPOINT, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ state, model: model ?? cfg.model, questions }),
-      signal: ac.signal,
-    });
+    const res = local
+      ? await fetchImpl(local, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ source: 'home-control', task, text, state, questions, model: model ?? cfg.model, timeout_ms: ms }),
+          signal: ac.signal,
+        })
+      : await fetchImpl(ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({ state, model: model ?? cfg.model, questions }),
+          signal: ac.signal,
+        });
     if (!res.ok) throw new Error(`jev ${res.status}${res.text ? ' ' + (await res.text().catch(() => '')).slice(0, 300) : ''}`.trimEnd());
     const body = await res.json();
     return {
       answers: body?.answers || {},
       usage: body?.usage ?? null,
-      requestId: res.headers?.get?.('x-typesafe-request-id') ?? null,
-      ms: Date.now() - started,
+      requestId: (local ? body?.request_id : res.headers?.get?.('x-typesafe-request-id')) ?? null,
+      ms: (local && Number.isFinite(body?.ms)) ? body.ms : Date.now() - started,
     };
   } finally {
     clearTimeout(timer);
@@ -206,7 +218,7 @@ export async function checkGarbage(state, opts = {}) {
   const r = await ask(state, {
     addressed_to_jarvis: { type: 'noul', ...ADDRESSED },
     complete_utterance: { type: 'noul', ...COMPLETE },
-  }, opts);
+  }, { task: 'garbage', ...opts });
   // A noul answers with the probability of yes. Anything missing or malformed means "yes":
   // the gate can only ever drop a turn on a real, confident answer.
   const p = (k) => { const n = Number(r.answers[k]?.noul); return Number.isFinite(n) ? n : null; };
@@ -214,7 +226,7 @@ export async function checkGarbage(state, opts = {}) {
 }
 
 export async function classify(state, opts = {}) {
-  const r = await ask(state, { intent: { type: 'choice', ...INTENT }, tv_action: { type: 'choice', ...TV_ACTION }, level: LEVEL }, opts);
+  const r = await ask(state, { intent: { type: 'choice', ...INTENT }, tv_action: { type: 'choice', ...TV_ACTION }, level: LEVEL }, { task: 'intent', ...opts });
   const a = r.answers;
   const intent = a.intent?.choice;
   if (!intent || !(intent in INTENT.criteria)) throw new Error('jev returned no intent');
@@ -239,9 +251,12 @@ export async function classify(state, opts = {}) {
 // fetch keeps the connection alive afterwards. Any failure is only logged; the router falls
 // through to Claude on its own.
 export const warm = async ({ fetchImpl = globalThis.fetch, apiKey = process.env.JEV_API_KEY } = {}) => {
-  if (!apiKey || routerMode() === 'off') return null;
+  const local = process.env.JEV_URL;
+  if ((!apiKey && !local) || routerMode() === 'off') return null;
   const started = Date.now();
-  const res = await fetchImpl(ENDPOINT.replace(/\/systemone$/, '/models'), { headers: { authorization: `Bearer ${apiKey}` } });
+  const res = local
+    ? await fetchImpl(local.replace(/\/v1\/ask$/, '/v1/models'))
+    : await fetchImpl(ENDPOINT.replace(/\/systemone$/, '/models'), { headers: { authorization: `Bearer ${apiKey}` } });
   return { status: res.status, ms: Date.now() - started };
 };
 

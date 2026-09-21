@@ -9,17 +9,28 @@ import http from 'node:http';
 const LABEL = process.env.VOICE_LABEL || 'home';
 const STATE = process.env.VOICE_STATE || path.join(os.homedir(), '.local', 'share', 'home-control', 'state', LABEL);
 const ROUTER_FILE = path.join(STATE, 'router.jsonl');
+// Every Jev consumer on this machine writes the shared trace line; this page shows them all.
+// name -> file. Add a consumer here (or JEV_TRACES="name=path,name=path").
+const TRACES = { router: ROUTER_FILE,
+  tailgather: path.join(os.homedir(), '.local', 'share', 'tailgather', 'jev.jsonl') };
+for (const kv of (process.env.JEV_TRACES || '').split(',').filter(Boolean)) {
+  const [k, v] = kv.split('='); if (k && v) TRACES[k.trim()] = v.trim();
+}
 const PORT = 4492;
 const HOST = '127.0.0.1';
 
 function readTurns() {
-  if (!fs.existsSync(ROUTER_FILE)) return [];
-  const lines = fs.readFileSync(ROUTER_FILE, 'utf8').split('\n');
   const out = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try { out.push(JSON.parse(line)); } catch { /* skip malformed/half-written last line */ }
+  for (const [source, file] of Object.entries(TRACES)) {
+    if (!fs.existsSync(file)) continue;
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try { const t = JSON.parse(line); t.source = t.source || source; out.push(t); }
+      catch { /* skip malformed/half-written last line */ }
+    }
   }
+  // Oldest first, like a single file would be; the API reverses it.
+  out.sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
   return out;
 }
 
@@ -39,7 +50,10 @@ function buildSummary(rows) {
   const byClaude = rows.filter((t) => t.result?.by === 'claude').length;
   const modes = {};
   for (const t of rows) { const m = t.mode || '-'; modes[m] = (modes[m] || 0) + 1; }
+  const sources = {};
+  for (const t of rows) { sources[t.source || 'router'] = (sources[t.source || 'router'] || 0) + 1; }
   return {
+    sources,
     turns: rows.length,
     jev_ok: jevOk,
     jev_errors: jevErrors,
@@ -55,12 +69,24 @@ function buildSummary(rows) {
   };
 }
 
+// Lines that share an ask_id become one row: the first line, with every line under `parts`.
+function foldAsks(rows) {
+  const out = []; const byAsk = new Map();
+  for (const t of rows) {
+    if (!t.ask_id) { out.push(t); continue; }
+    const head = byAsk.get(t.ask_id);
+    if (head) head.parts.push(t);
+    else { const h = { ...t, parts: [t] }; byAsk.set(t.ask_id, h); out.push(h); }
+  }
+  return out;
+}
+
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/api/turns') {
     let rows;
     try { rows = readTurns(); } catch (e) { res.writeHead(500); res.end(String(e)); return; }
-    rows = rows.slice(-300).reverse(); // newest first
+    rows = foldAsks(rows).slice(-300).reverse(); // newest first
     const body = JSON.stringify({ summary: buildSummary(rows), turns: rows });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(body);
@@ -76,7 +102,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`router-dash listening on http://${HOST}:${PORT}  (reading ${ROUTER_FILE})`);
+  console.log(`router-dash listening on http://${HOST}:${PORT}  (reading ${Object.values(TRACES).join(', ')})`);
 });
 
 const PAGE = `<!doctype html>
@@ -137,6 +163,9 @@ const PAGE = `<!doctype html>
     border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer;
   }
   .filters button.active { background: var(--accent); color: #06121f; border-color: var(--accent); }
+  details.fold > summary { cursor: pointer; font-size: 11px; color: var(--dim); margin-top: 4px; }
+  .section-title { margin: 8px 0 4px; font-size: 11px; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+  .prob-row.hit .bar-fill { background: var(--good); }
   @keyframes flash { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
   .card .row1 { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); font-size: 11px; }
   .said { font-size: 14px; margin: 4px 0 6px; line-height: 1.35; }
@@ -224,7 +253,8 @@ function cfgLine(c) {
 function renderHeader(summary) {
   const modeStr = Object.entries(summary.modes || {}).map(([k, v]) => \`\${k}:\${v}\`).join(' ');
   document.getElementById('header').innerHTML = \`
-    <h1>Jev Router</h1>
+    <h1>Jev</h1>
+    <div class="stat"><div class="v" style="font-size:12px">\${esc(Object.entries(summary.sources || {}).map(([k, v]) => \`\${k}:\${v}\`).join(' '))}</div><div class="l">sources</div></div>
     <div class="stat"><div class="v">\${summary.turns}</div><div class="l">turns</div></div>
     <div class="stat"><div class="v good">\${summary.jev_ok}</div><div class="l">jev ok</div></div>
     <div class="stat"><div class="v \${summary.jev_errors ? 'bad' : ''}">\${summary.jev_errors}</div><div class="l">jev errors</div></div>
@@ -241,13 +271,91 @@ function renderHeader(summary) {
       <button class="\${filter === 'all' ? 'active' : ''}" onclick="setFilter('all')">all</button>
       <button class="\${filter === 'jev' ? 'active' : ''}" onclick="setFilter('jev')">routed</button>
       <button class="\${filter === 'claude' ? 'active' : ''}" onclick="setFilter('claude')">claude</button>
+      <button class="\${filter === 'search' ? 'active' : ''}" onclick="setFilter('search')">search</button>
     </div>
   \`;
 }
 
+// A consumer that is not the router: rendered from the shared trace keys alone.
+// tailgather \`ask\` writes two lines with one ask_id (ask_parse, search_rerank); the API folds
+// them into one card so a question reads top to bottom: asked, parsed, searched, ranked.
+function renderParse(t) {
+  const ans = t.jev?.answers || {}; const r = t.result || {};
+  let html = \`<div class="section-title">1 · parse \${t.jev?.ms ?? '-'}ms</div>\`;
+  // Query candidates code generated, each with Jev's probability; bright = searched.
+  const words = t.candidates_q
+    ? t.candidates_q.map((c) => [c.q, Number(c.p ?? 0), c.why]).sort((a, b) => b[1] - a[1])
+    : (t.words || []).map((w) => [w, Number(ans['w_' + w]?.noul ?? 0), '']).sort((a, b) => b[1] - a[1]);
+  if (words.length) html += '<div class="words">' + words.map(([w, p, why]) =>
+    \`<span class="chip\${(r.terms || []).includes(w) ? '' : ' low'}" title="\${esc(why)}">\${esc(w)} \${p.toFixed(2)}</span>\`).join('') + '</div>';
+  html += \`<div class="meta"><span>fts: <b>\${esc(r.fts || '-')}</b></span><span>app: <b>\${esc(r.app || '-')}</b> \${r.app_p != null ? Number(r.app_p).toFixed(2) : ''}</span><span>window: <b>\${esc(r.window || '-')}</b> \${r.window_p != null ? Number(r.window_p).toFixed(2) : ''}</span>\${r.widened ? '<span>widened: filters dropped, nothing matched</span>' : ''}</div>\`;
+  for (const name of ['app', 'window']) {
+    const a = ans[name]; if (!a?.probabilities) continue;
+    const entries = Object.entries(a.probabilities).sort((x, y) => y[1] - x[1]).filter(([, v]) => v >= 0.02);
+    html += \`<details class="state"><summary>\${name} probabilities</summary><div class="probs">\${entries.map(([k, v]) => probBar(k, v, 1)).join('')}</div></details>\`;
+  }
+  if (t.error || t.jev?.error) html += \`<div class="err-line">error: \${esc(t.error || t.jev?.error)}</div>\`;
+  return html;
+}
+function renderRerank(t) {
+  const r = t.result || {}; const cands = t.jev?.state?.candidates || []; const min = t.found_min;
+  let html = \`<div class="section-title">\${t.ask_id ? '2 · ' : ''}rank \${t.candidates ?? cands.length} candidates \${t.jev?.ms ?? '-'}ms · \${t.jev?.usage?.input_tokens ?? '-'} tokens\${min != null ? ' · found ≥ ' + min : ''}</div>\`;
+  if (!t.ask_id) html += \`<div class="meta"><span>fts: <b>\${esc(t.fts || '-')}</b></span></div>\`;
+  if (t.error || t.jev?.error) html += \`<div class="err-line">error: \${esc(t.error || t.jev?.error)}</div>\`;
+  if (r.order) {
+    const found = r.order.filter((i) => min == null || r.p[i] >= min).length;
+    html += \`<div class="meta"><span>\${found} above threshold · best \${Number(r.p[r.order[0]]).toFixed(2)}</span></div>\`;
+    html += '<div class="probs">' + r.order.map((i, k) => {
+      const c = cands[i] || {}; const p = r.p[i]; const hit = min == null ? k < 5 : p >= min;
+      return \`<div class="prob-row\${hit ? ' hit' : ''}"><div class="name" title="bm25 #\${i}">#\${i} \${esc(c.day || '')} \${esc(c.kind === 'turn' ? (c.speaker || 'turn') : (c.app || ''))}</div><div class="bar-wrap"><div class="bar-fill" style="width:\${Math.round(p * 100)}%"></div></div><div style="width:32px">\${Number(p).toFixed(2)}</div></div>\` +
+        (hit ? \`<div class="reply" style="margin:0 0 6px 0">\${esc((c.text || '').slice(0, 220))}</div>\` : '');
+    }).join('') + '</div>';
+  } else if (t.candidates === 0) html += '<div class="meta"><span>no candidates: the search found nothing</span></div>';
+  return html;
+}
+function renderGenericCard(t, isNew) {
+  const parts = t.parts || [t];
+  const hasErr = parts.some((x) => x.error || x.jev?.error);
+  const task = t.ask_id ? 'ask' : (t.task || 'jev');
+  let html = \`<div class="top-badge by-jev">\${esc((t.source || '').toUpperCase())} · \${esc(task)}</div>\`;
+  html += \`<div class="row1"><span>\${fmtTime(t.at)}</span><span>\${esc(t.ask_id || t.turn_id)}</span></div>\`;
+  html += \`<div class="said">\${esc(t.text)}</div>\`;
+  const rr = parts.find((x) => x.result?.order);
+  if (rr) {
+    const r = rr.result; const min = rr.found_min; const c = rr.jev?.state?.candidates || [];
+    const found = r.order.filter((i) => min == null || r.p[i] >= min);
+    const best = c[r.order[0]] || {};
+    html += \`<div class="meta"><span>\${found.length} found of \${rr.candidates ?? c.length} · best \${Number(r.p[r.order[0]]).toFixed(2)}</span><span>\${parts.map((x) => x.jev?.ms).filter((x) => x != null).reduce((a, b) => a + b, 0)}ms</span></div>\`;
+    if (found.length) html += \`<div class="reply" style="margin:2px 0 4px">\${esc((best.text || '').slice(0, 160))}</div>\`;
+  } else if (parts.some((x) => x.error || x.jev?.error)) html += '<div class="err-line">failed</div>';
+  const key = t.ask_id || t.turn_id;
+  html += \`<details class="fold" \${opened.has(key) ? 'open' : ''} ontoggle="toggled('\${esc(key)}', this.open)"><summary>details</summary>\`;
+  for (const x of parts) {
+    if (x.task === 'ask_parse') html += renderParse(x);
+    else if (x.task === 'search_rerank' || x.task === 'rerank_probe') html += renderRerank(x);
+    else if (x.jev?.answers) {
+      for (const [name, a] of Object.entries(x.jev.answers)) {
+        if (a.probabilities) html += \`<div class="intent-row"><div class="intent-label">\${esc(name)}: \${esc(a.choice ?? a.score)}</div></div><div class="probs">\${Object.entries(a.probabilities).sort((p, q) => q[1] - p[1]).map(([k, v]) => probBar(k, v, 1)).join('')}</div>\`;
+        else if (a.noul != null) html += '<div class="probs">' + probBar(name, a.noul, 1) + '</div>';
+      }
+    }
+    if (x.jev?.request_id) html += \`<div class="meta"><span class="req-id">\${esc(x.jev.request_id)}</span></div>\`;
+    if (x.jev?.state) {
+      const st = typeof x.jev.state === 'string' ? x.jev.state : JSON.stringify(x.jev.state, null, 1);
+      html += \`<details class="state"><summary>state sent to Jev (\${esc(x.task || '')})</summary><pre>\${esc(st)}</pre></details>\`;
+    }
+  }
+  html += '</details>';
+  return \`<div class="card by-jev \${hasErr ? 'err' : ''} \${isNew && !first ? 'new' : ''}" data-id="\${esc(t.ask_id || t.turn_id)}">\${html}</div>\`;
+}
+const opened = new Set();
+function toggled(key, open) { if (open) opened.add(key); else opened.delete(key); }
+window.toggled = toggled;
+
 function renderCard(t) {
   const isNew = !seen.has(t.turn_id);
   seen.add(t.turn_id);
+  if (t.source && t.source !== 'router') return renderGenericCard(t, isNew);
   const hasErr = !!(t.error || t.jev?.error);
   const kind = turnKind(t);
   let badgeText;
@@ -336,7 +444,7 @@ function renderCard(t) {
 
 function renderTurns(turns) {
   const container = document.getElementById('turns');
-  const filtered = filter === 'all' ? turns : filter === 'jev'
+  const filtered = filter === 'all' ? turns : filter === 'search' ? turns.filter((t) => t.source && t.source !== 'router') : filter === 'jev'
     ? turns.filter((t) => turnKind(t) === 'by-jev' || turnKind(t) === 'dropped')
     : turns.filter((t) => turnKind(t) !== 'by-jev' && turnKind(t) !== 'dropped');
   if (!filtered.length) {
