@@ -5,6 +5,7 @@
 // turn fail, so every failure path ends in "go to Claude, exactly as before".
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -120,8 +121,8 @@ const INTENT = {
     away_on: 'The user says they are leaving, going out, or asks for away mode to be turned on.',
     away_off: 'The user says they are back home, or asks for away mode to be turned off.',
     tv: 'A direct command about the television: mute, unmute, volume, turn it on or off, switch input.',
-    relay_on: 'The user asks to start relay mode with another agent session, naming or describing it.',
-    relay_off: 'The user asks to end relay mode.',
+    relay_on: 'The user wants their words carried to another agent session on this machine, named or described, and its replies brought back: "relay mode with X", "tell X that ...", "pass this to X", "ask the X session ...". The exact phrasing does not matter; what matters is that a message is meant for another session.',
+    relay_off: 'The user wants to stop talking to the other session and talk to the assistant again: "relay mode off", "stop relaying", "back to you".',
     conversation: 'Anything else at all: a question, a request for work, chat, or an unclear turn.',
   },
 };
@@ -244,11 +245,30 @@ export const warm = async ({ fetchImpl = globalThis.fetch, apiKey = process.env.
   return { status: res.status, ms: Date.now() - started };
 };
 
+// The other live Claude Code sessions on this machine, read from Claude Code's own registry
+// (~/.claude/sessions/<pid>.json, one file per session, socket-backed). Read fresh per turn: a
+// handful of small files. A registry entry whose process is gone is skipped, and Jarvis's own
+// session (named dev-<n> by Home Control) is not a session you can relay to. Names and folders
+// only — that is all Jev needs to match "the mobile session" or "jev integration creator".
+export const liveSessions = ({ dir = path.join(os.homedir(), '.claude', 'sessions'), isAlive = (pid) => fs.existsSync(`/proc/${pid}`), self = /^dev-\d+$/ } = {}) => {
+  let files = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return []; }
+  const out = [];
+  for (const f of files) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      if (!d?.name || !d?.pid || !isAlive(d.pid) || self.test(d.name)) continue;
+      out.push({ name: d.name, folder: path.basename(d.cwd || ''), status: d.status || '' });
+    } catch {}
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+};
+
 export const buildState = ({ text, lang, away, tvOn, sessions = [], recent = [] }) => [
   `The user said (language: ${lang === 'he' ? 'Hebrew' : 'English'}): ${JSON.stringify(text)}`,
   `Away mode is currently ${away ? 'on' : 'off'}.`,
   tvOn === null || tvOn === undefined ? 'TV power state unknown.' : `The TV is currently ${tvOn ? 'on' : 'off'}.`,
-  sessions.length ? `Live agent sessions: ${sessions.join(', ')}.` : 'No other agent sessions are known.',
+  sessions.length ? `Live agent sessions on this machine (name, folder): ${sessions.map((x) => (typeof x === 'string' ? x : `${x.name} (${x.folder})`)).join('; ')}.` : 'No other agent sessions are known.',
   // The last exchanges, both sides: a bare "yes" only makes sense next to what was asked.
   recent.length ? `Recent exchanges:\n${recentLines(recent)}` : '',
 ].filter(Boolean).join('\n');

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { routeTurn, garbageCheck, classify, checkGarbage, line, procedures, resetTvCache, buildState, buildGarbageState, wavDurationS, shortMaxS } from '../router.mjs';
+import { routeTurn, garbageCheck, classify, checkGarbage, line, procedures, resetTvCache, buildState, buildGarbageState, wavDurationS, shortMaxS, liveSessions } from '../router.mjs';
 
 const input = { text: 'mute the TV', lang: 'en', away: false, tvOn: true };
 
@@ -448,5 +448,20 @@ assert.equal(procedures.conversation(), null);   // the common label has no proc
 {
   // An exchange whose reply is not recorded yet still renders a readable placeholder.
   assert.ok(buildState({ text: 'yes', lang: 'en', away: false, tvOn: true, recent: [{ user: 'hi', agent: '' }] }).includes('(no reply recorded)'));
+}
+{
+  // live sessions come from Claude Code's registry: dead pids and Jarvis's own dev-<n> are skipped
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-sessions-'));
+  const w = (f, d) => fs.writeFileSync(path.join(dir, f), JSON.stringify(d));
+  w('1.json', { pid: 1, name: 'jev-integration-creator', cwd: '/home/x/dev', status: 'busy' });
+  w('2.json', { pid: 2, name: 'omarchy-mobile', cwd: '/home/x/dev/projects/omarchy-mobile', status: 'idle' });
+  w('3.json', { pid: 3, name: 'dev-69', cwd: '/home/x/dev' });
+  w('4.json', { pid: 4, name: 'gone', cwd: '/home/x/dev' });
+  fs.writeFileSync(path.join(dir, 'junk.json'), '{not json');
+  const got = liveSessions({ dir, isAlive: (pid) => pid !== 4 });
+  assert.deepEqual(got.map((x) => x.name), ['jev-integration-creator', 'omarchy-mobile']);
+  assert.equal(got[1].folder, 'omarchy-mobile');
+  assert.ok(buildState({ text: 'x', lang: 'en', away: false, tvOn: true, sessions: got }).includes('omarchy-mobile (omarchy-mobile)'));
+  assert.deepEqual(liveSessions({ dir: path.join(dir, 'missing') }), []);
 }
 console.log('Passed: away on/off, tv actions and volume snapping, tv failure line, other/conversation/low confidence fall through, relay instructions, shadow and off, WAV duration from the header (rates, extra chunks, junk), short/long selection, the garbage check as its own request (both nouls in one request, whisper evidence in the state, no no_speech_prob, drop in on, would-drop in shadow, 0.5 and a missing noul never drop, a failure falls through), the fragment gate (addressed wins over fragment, fragment drop and shadow would-drop, one/two words only complete next to a matching exchange), the intent request carrying no noul, live config (file > env > default, per-key fallback, a typo keeps the last good values and warns once, deletion), both sides of recent exchanges in the state, trace fields, timeout and missing key, fixed lines, request shape');

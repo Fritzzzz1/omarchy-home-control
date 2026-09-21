@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBody } from './request-body.mjs';
 import { runInputHook } from './input-hook.mjs';
-import { routeTurn, garbageCheck, routerMode, routerConfig, setRouterLog, wavDurationS, tvIsOn, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
+import { routeTurn, garbageCheck, routerMode, routerConfig, setRouterLog, wavDurationS, tvIsOn, liveSessions, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
@@ -792,7 +792,7 @@ const handleTurn = async (req, res) => {
       // Only a transcribed turn can be whisper garbage; something typed on the phone is
       // deliberate, has no duration, and skips the gate entirely.
       const short = duration != null && duration < cfg.short_max_s;
-      trace = { turn_id: turnId, at: new Date(started).toISOString(), text, lang, away: isAway(), tv_on: tvIsOn(), config: cfg, audio: inputAudio ? { duration_s: duration == null ? null : Math.round(duration * 100) / 100, short } : null, t: { text_ready: new Date().toISOString() } };
+      trace = { turn_id: turnId, at: new Date(started).toISOString(), text, lang, away: isAway(), tv_on: tvIsOn(), sessions: liveSessions(), config: cfg, audio: inputAudio ? { duration_s: duration == null ? null : Math.round(duration * 100) / 100, short } : null, t: { text_ready: new Date().toISOString() } };
       // Step one of the gate: the garbage check, its own Jev request, short recordings only. A
       // dropped turn ends here — no intent question, no Claude, nothing spoken.
       if (short) {
@@ -818,7 +818,7 @@ const handleTurn = async (req, res) => {
         }
       }
       const { mode, decision, action, error, jev } = await routeTurn(
-        { text, lang, typed: !inputAudio, away: trace.away, tvOn: trace.tv_on, recent: recentTurns },
+        { text, lang, typed: !inputAudio, away: trace.away, tvOn: trace.tv_on, sessions: trace.sessions, recent: recentTurns },
         { setAway, log },
       );
       trace.mode = mode;
