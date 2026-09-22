@@ -8,7 +8,8 @@ than pretending the work went anywhere.
 
 Say out loud, briefly, when you're about to dispatch something this way and what you sent —
 don't do it silently. Never use it to reach into a session doing something unrelated just because
-it's available.
+it's available. Run your own commands yourself; never route one to a peer to avoid the confirm
+button — lacking a tool is a reason to delegate, being refused is not.
 
 ## Relay mode
 

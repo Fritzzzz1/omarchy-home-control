@@ -92,6 +92,18 @@ body>header #autoToggle[aria-pressed="true"]{background:var(--green);border-colo
 #cancelRec:hover{background:#acc6b620;filter:none}#cancelRec:active{background:#acc6b62e}
 @media(max-width:899px){#top #modeText{min-width:0;flex:1}#cancelRec{margin-left:auto}}
 @media(min-width:900px){#top{position:relative}#cancelRec{position:absolute;right:28px;top:24px}}
+/* Confirm card: a tool call waiting for Allow/Deny (server.mjs /api/permission). */
+.confirm-overlay{position:fixed;inset:0;background:#05070690;display:flex;align-items:flex-end;justify-content:center;z-index:6;padding:24px 16px calc(env(safe-area-inset-bottom) + 24px)}
+.confirm-overlay[hidden]{display:none}
+.confirm-panel{background:var(--panel);border:1px solid #e5c28e40;border-radius:20px;max-width:460px;width:100%;padding:20px;box-shadow:0 20px 60px -20px #000000a0}
+.confirm-panel .eyebrow{color:var(--amber);margin-bottom:10px}
+#confirmTool{font-size:13px;color:var(--dim);margin-bottom:8px;overflow-wrap:anywhere}
+#confirmSummary{font-size:14px;line-height:1.6;font-family:ui-monospace,Menlo,monospace;background:#ffffff06;border:1px solid var(--line);border-radius:12px;padding:12px;max-height:40vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.confirm-actions button{min-height:50px;border-radius:12px;border:1px solid var(--line);font-size:15px;font-weight:500}
+#confirmDeny{background:#442c28;color:#ffb6a7}
+#confirmAllow{background:var(--green);color:#203123;border-color:transparent}
+#confirmTimer{margin-top:10px;font-size:11px;color:var(--dim);text-align:center}
 </style>
 </head>
 <body>
@@ -173,6 +185,15 @@ body>header #autoToggle[aria-pressed="true"]{background:var(--green);border-colo
       <div class="setting-label">Out of sync?</div>
       <button type="button" id="helpBtn" aria-label="Reset: stop all audio, drop what's queued, reopen the mic"><span class="help-mark" aria-hidden="true">!</span>Stop all audio and start clean</button>
     </div>
+  </div>
+</div>
+<div id="confirmCard" class="confirm-overlay" hidden>
+  <div class="confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmSummary">
+    <div class="eyebrow" id="confirmTitle">Confirmation needed</div>
+    <div id="confirmTool"></div>
+    <div id="confirmSummary" dir="auto"></div>
+    <div class="confirm-actions"><button type="button" id="confirmDeny">Deny</button><button type="button" id="confirmAllow">Allow</button></div>
+    <div id="confirmTimer"></div>
   </div>
 </div>
 <audio id="player" playsinline></audio>
@@ -278,6 +299,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { if (on) yieldMic(); return; }
   // Coming back is a choice, so auto mode takes the mic back; checkMic falls back to a tap if it's still taken.
   if (on) { keepAwake(); if (yielded && voiceMode === 'auto') yielded = false; checkMic(); }
+  if (live?.readyState === 2) openLive();   // failed for good while hidden; see openLive
   pollEvents();
 });
 
@@ -501,7 +523,7 @@ function playNext(mine) {
   playing = true; setMode('speaking', 'Speaking');
   const piece = queue.shift(), token = ++playToken;
   if (nowSpan) { nowSpan.classList.remove('now'); nowSpan.classList.add('done'); }
-  nowSpan = piece.span; nowSpan.classList.add('now'); nowSpan.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  nowSpan = piece.span; if (nowSpan) { nowSpan.classList.add('now'); nowSpan.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }   // a cue has no text span
   let timer = null, settled = false, started = false;   // progress re-arms the timer only once playback has begun
   const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => (paused ? arm(ms) : settle('stalled')), ms); };
   const progress = () => { if (token !== playToken) return; const left = (player.duration - player.currentTime) / (player.playbackRate || 1); arm((Number.isFinite(left) ? left * 1000 : 60000) + STALL_GRACE_MS); };
@@ -555,6 +577,52 @@ $('pause').onclick = () => {
   if (paused) { player.pause(); modeText.textContent = 'Paused'; } else { player.play(); modeText.textContent = 'Speaking'; }
 };
 
+// ---- confirm card: a tool call waiting for Allow/Deny, one at a time. Cards come on the page's
+// live stream (/api/live), whoever started the turn; the server denies by itself on timeout or when
+// no page is left. The countdown here only closes the card; the server's own timer answers.
+let confirmId = null, confirmTick = null;
+const hideConfirm = (id) => { if (id && id !== confirmId) return; confirmId = null; clearInterval(confirmTick); $('confirmCard').hidden = true; };
+const showConfirm = (ev) => {
+  confirmId = ev.id;
+  $('confirmTool').textContent = ev.tool || '';
+  $('confirmSummary').textContent = ev.summary || '';
+  $('confirmAllow').disabled = $('confirmDeny').disabled = false;
+  const until = Date.now() + (ev.timeoutMs || 120000);
+  const paint = () => { const s = Math.max(0, Math.ceil((until - Date.now()) / 1000)); $('confirmTimer').textContent = `Denied automatically in ${s} s`; if (!s) hideConfirm(ev.id); };
+  clearInterval(confirmTick); paint(); confirmTick = setInterval(paint, 1000);
+  $('confirmCard').hidden = false;
+};
+const answerConfirm = async (decision) => {
+  const id = confirmId; if (!id) return;
+  $('confirmAllow').disabled = $('confirmDeny').disabled = true;
+  try { await fetch('/api/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, decision }) }); } catch {}
+  hideConfirm(id);
+};
+$('confirmAllow').onclick = () => answerConfirm('allow');
+$('confirmDeny').onclick = () => answerConfirm('deny');
+// The cue plays like a reply sentence: queued behind this page's running turn, or, when no turn of
+// this page is running (another session started it), with the mic taken offline the same way a
+// caught-up reply is played, so the mic never hears it.
+async function playCue(url) {
+  if (busy) { queue.push({ url, span: null }); playNext(currentTurn); return; }
+  busy = true; earOff(); unlock();
+  const mine = ++currentTurn;
+  queue = [{ url, span: null }]; nowSpan = null; playNext(mine);
+  await whilePlaying();
+  if (mine === currentTurn) { busy = false; if (on) earOn(); else setMode('off', 'Paused'); }
+}
+// The live stream stays open as long as the page. EventSource reconnects by itself after a drop;
+// one that failed for good (a 401, say) is reopened when the page is shown again.
+let live = null;
+const handleLive = (ev) => {
+  if (ev.type === 'confirm_sync') { if (ev.confirm) showConfirm(ev.confirm); else hideConfirm(); }
+  if (ev.type === 'confirm') { showConfirm(ev); if (busy && !playing) setMode('thinking', 'Waiting for your answer'); }
+  if (ev.type === 'confirm_done') { hideConfirm(ev.id); if (busy && !playing) setMode('thinking', 'Thinking'); }
+  if (ev.type === 'cue' && ev.id === confirmId) playCue(ev.url);
+};
+const openLive = () => { live = new EventSource('/api/live'); live.onmessage = (m) => { try { handleLive(JSON.parse(m.data)); } catch {} }; };
+openLive();
+
 // ---- the call button and the mic
 const setBigIcon = (stopping) => { $('bigPlayIcon').style.display = stopping ? 'none' : ''; $('bigStopIcon').style.display = stopping ? '' : 'none'; big.setAttribute('aria-label', stopping ? 'End conversation' : 'Start conversation'); };
 async function start() {
@@ -571,7 +639,7 @@ async function start() {
   on = true; yielded = false; big.classList.add('stop'); setBigIcon(true); big.disabled = false;
   setMode('listening', listeningLabel()); touch();
 }
-function end() { clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; heldAudio = null; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', STOPPED_LABEL); }
+function end() { if (confirmId) answerConfirm('deny'); clearTimeout(idleTimer); on = false; micDead = micStale = yielded = false; heldAudio = null; earOff(); interrupt(); busy = false; dictating = false; dictateFrames = []; big.classList.remove('stop'); setBigIcon(false); setMode('off', STOPPED_LABEL); }
 big.onclick = () => (on ? end() : start());
 // shared visual toggle for the mute/ear-mute buttons: pressed state, label, and the slash icon
 const setToggleButton = (btn, slashId, active, labelOn, labelOff) => { btn.classList.toggle('on', active); btn.setAttribute('aria-pressed', String(active)); btn.setAttribute('aria-label', active ? labelOn : labelOff); $(slashId).style.display = active ? '' : 'none'; };
