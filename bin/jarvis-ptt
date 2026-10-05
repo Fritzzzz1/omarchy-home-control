@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# jarvis-ptt — push-to-talk into Home Control from this machine's own microphone.
+#
+# A second way in, beside the phone: the phone path is untouched. One boolean (a flag file)
+# enables this path; while it is on, one key starts a recording from the USB mic and the same
+# key sends it as a turn. The server treats it exactly like a phone turn: same transcription,
+# router, agent, speech on these speakers, input hook, transcript and dashboards.
+#
+#   jarvis-ptt toggle    flip the local-mic path on/off (toast)
+#   jarvis-ptt record    start recording; if already recording, stop and send
+#   jarvis-ptt cancel    drop the recording in progress
+#   jarvis-ptt skip      stop whatever the agent is saying (the phone's skip, hush variant)
+#   jarvis-ptt status    one line: on/off, mic present, recording or not
+#
+# Config comes from ~/.config/home-control/config.env (VOICE_PORT, VOICE_STATE, VOICE_TOKEN).
+# The mic is any PipeWire source whose description matches JARVIS_PTT_MIC (default: DJI).
+set -u
+
+CONFIG="${HOME}/.config/home-control/config.env"
+[ -r "$CONFIG" ] && while IFS='=' read -r k v; do
+  case "$k" in VOICE_PORT|VOICE_STATE|VOICE_TOKEN) printf -v "$k" '%s' "$v" ;; esac
+done < <(grep -E '^(VOICE_PORT|VOICE_STATE|VOICE_TOKEN)=' "$CONFIG")
+PORT="${VOICE_PORT:-4455}"
+STATE="${VOICE_STATE:-$HOME/.local/share/home-control/state/home}"
+TOKEN_FILE="${VOICE_TOKEN:-$STATE/voice-token}"
+BASE="http://127.0.0.1:$PORT"
+MIC_MATCH="${JARVIS_PTT_MIC:-DJI}"
+
+DIR="$STATE/ptt"; mkdir -p "$DIR"
+FLAG="$DIR/enabled"          # exists = local-mic path is on
+PID="$DIR/record.pid"
+WAV="$DIR/utterance.wav"
+JAR="$DIR/cookies"
+LOG="$DIR/ptt.log"
+
+TOAST_ID="$DIR/toast.id"
+METER_PID="$DIR/meter.pid"
+
+log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
+# One toast for the whole exchange, replaced in place. `show` keeps it open (-t 0);
+# `show_for MS` lets it close on its own. The id survives across invocations in a file.
+_notify() { local t=$1 title=$2 body=$3 id; id=$(cat "$TOAST_ID" 2>/dev/null); notify-send -p -a Jarvis -t "$t" ${id:+-r "$id"} "$title" "$body" > "$TOAST_ID.new" 2>/dev/null && mv "$TOAST_ID.new" "$TOAST_ID"; }
+show()     { _notify 0 "${2:-Jarvis}" "$1"; log "$1"; }
+show_for() { _notify "$1" "${3:-Jarvis}" "$2"; log "$2"; rm -f "$TOAST_ID"; }
+toast()    { show_for 4000 "$1"; }
+
+mic_node() {
+  # The node name of the first source whose description matches; empty when the mic is absent.
+  pactl -f json list sources 2>/dev/null | python3 -c '
+import json,sys,re
+m=sys.argv[1]
+for s in json.load(sys.stdin):
+    if re.search(m, s.get("description",""), re.I) and not s["name"].endswith(".monitor"):
+        print(s["name"]); break' "$MIC_MATCH"
+}
+
+recording() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; }
+
+login() {
+  # A cookie from a previous run is reused; a 401 on the probe means log in again.
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/api/state")
+  [ "$code" = 200 ] && return 0
+  [ -r "$TOKEN_FILE" ] || { toast "no passphrase at $TOKEN_FILE"; return 1; }
+  curl -s -o /dev/null -c "$JAR" --data-urlencode "key@$TOKEN_FILE" "$BASE/login"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/api/state")
+  [ "$code" = 200 ] || { toast "login to Home Control failed ($code)"; return 1; }
+}
+
+busy() { curl -s -b "$JAR" "$BASE/api/state" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("busy") else 1)'; }
+
+cmd_toggle() {
+  if [ -e "$FLAG" ]; then rm -f "$FLAG"; recording && cmd_cancel quiet; toast "local mic off"
+  else
+    touch "$FLAG"
+    if [ -n "$(mic_node)" ]; then toast "local mic on — Super+J to talk"; else toast "local mic on, but no mic found ($MIC_MATCH)"; fi
+  fi
+}
+
+cmd_record() {
+  [ -e "$FLAG" ] || { toast "local mic is off (Super+Shift+Alt+J)"; return 1; }
+  if recording; then cmd_send; return; fi
+  local node; node=$(mic_node)
+  [ -n "$node" ] || { toast "no mic found ($MIC_MATCH)"; return 1; }
+  login || return 1
+  if busy; then toast "Jarvis is busy — Super+U to cut him off"; return 1; fi
+  rm -f "$WAV"
+  # Same shape the phone sends: 16 kHz mono s16 WAV.
+  pw-record --target "$node" --rate 16000 --channels 1 --format s16 "$WAV" &
+  echo $! > "$PID"
+  show "listening…" "Jarvis · Super+J to send, Super+Alt+J to cancel"
+  meter_loop & echo $! > "$METER_PID"; disown
+}
+
+# Every 200 ms: the last 200 ms of the growing WAV → a level bar and the elapsed time, into
+# the same toast. Stops when the recording pid file goes away (send or cancel).
+meter_loop() {
+  local t0=$(date +%s.%N) body
+  while [ -f "$PID" ]; do
+    body=$(python3 - "$WAV" "$t0" <<'PY' 2>/dev/null
+import sys,os,array,math,time
+f,t0=sys.argv[1],float(sys.argv[2]); n=6400  # 200 ms of 16 kHz s16 mono
+try:
+    size=os.path.getsize(f); fh=open(f,'rb'); fh.seek(max(44,size-n)); raw=fh.read(n)
+except Exception: raw=b''
+raw=raw[:len(raw)//2*2]; a=array.array('h'); a.frombytes(raw)
+rms=math.sqrt(sum(v*v for v in a)/len(a))/32768 if len(a) else 0.0
+db=20*math.log10(rms) if rms>0 else -60.0
+lvl=max(0,min(24,int((db+50)/50*24)))
+el=time.time()-t0
+print(f"{'█'*lvl}{'░'*(24-lvl)}  {el:4.1f}s")
+PY
+)
+    _notify 0 "Jarvis · listening" "$body"
+    sleep 0.2
+  done
+}
+
+stop_meter() { [ -f "$METER_PID" ] && { kill "$(cat "$METER_PID")" 2>/dev/null; rm -f "$METER_PID"; }; }
+
+cmd_send() {
+  recording || { toast "not recording"; return 1; }
+  kill -INT "$(cat "$PID")" 2>/dev/null
+  # pw-record was started by a previous invocation: wait for it to finish writing the header.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$(cat "$PID")" 2>/dev/null || break; sleep 0.1; done
+  rm -f "$PID"; stop_meter
+  [ -s "$WAV" ] || { toast "nothing recorded"; return 1; }
+  show "sent · transcribing…"
+  # The turn streams events; each one updates the same toast: status → heard → the reply as it
+  # streams → closes a few seconds after the turn ends. The reply plays on the speakers as always.
+  (
+    curl -s -N -b "$JAR" -H 'Content-Type: audio/wav' --data-binary "@$WAV" "$BASE/api/turn" \
+    | python3 -u - "$TOAST_ID" <<'PY'
+import sys,json,subprocess,os
+idf=sys.argv[1]
+def _id():
+    try: return open(idf).read().strip()
+    except Exception: return ''
+def show(body,title='Jarvis',t=0):
+    i=_id(); cmd=['notify-send','-p','-a','Jarvis','-t',str(t)]+(['-r',i] if i else [])+[title,body]
+    out=subprocess.run(cmd,capture_output=True,text=True).stdout.strip()
+    if out: open(idf,'w').write(out)
+heard=''; reply=''; ended=False; title='Jarvis'
+for line in sys.stdin:
+    if not line.startswith('data: '): continue
+    try: ev=json.loads(line[6:])
+    except Exception: continue
+    t=ev.get('type')
+    if t=='status': show(f"{heard}\n… {ev.get('text','')}" if heard else f"… {ev.get('text','')}", title)
+    elif t=='transcript': heard=f"you: {ev.get('text','')}"; show(heard, title)
+    elif t=='routed':
+        # Jev answered this one itself (a TV action, away mode…): no agent turn is coming.
+        title=f"handled by Jev · {ev.get('label','')}"; show(heard, title)
+    elif t in ('partial','text'): reply=ev.get('full') or ev.get('text') or reply; show(f"{heard}\nJarvis: {reply}", title)
+    elif t=='ignored':
+        # Words were heard and still nothing comes back: Jev dropped the turn. No words: empty recording.
+        if heard: show(f"{heard}\n(no reply coming)", 'dropped by Jev', t=6000)
+        else: show('nothing usable in that recording', 'Jarvis', t=4000)
+        ended=True
+    elif t=='error': show('error: '+str(ev.get('text') or ev.get('error') or ''), title, t=6000); ended=True
+    elif t=='done': show(f"{heard}\nJarvis: {reply}" if reply else heard, title, t=8000); ended=True
+if not ended: show(f"{heard}\nJarvis: {reply}" if reply else (heard or 'turn ended'), title, t=8000)
+try: os.remove(idf)
+except Exception: pass
+PY
+  ) >/dev/null 2>&1 &
+  disown
+}
+
+cmd_cancel() {
+  recording || { [ "${1:-}" = quiet ] || toast "not recording"; return 0; }
+  kill -INT "$(cat "$PID")" 2>/dev/null; rm -f "$PID" "$WAV"; stop_meter
+  [ "${1:-}" = quiet ] || show_for 2000 "cancelled"
+}
+
+cmd_skip() { login || return 1; curl -s -o /dev/null -X POST -b "$JAR" "$BASE/api/skip?hush=1"; toast "skipped"; }
+
+cmd_status() {
+  local node; node=$(mic_node)
+  printf 'local mic: %s | mic: %s | recording: %s\n' \
+    "$([ -e "$FLAG" ] && echo on || echo off)" "${node:-none}" "$(recording && echo yes || echo no)"
+}
+
+case "${1:-}" in
+  toggle) cmd_toggle ;; record) cmd_record ;; send) cmd_send ;; cancel) cmd_cancel ;;
+  skip) cmd_skip ;; status) cmd_status ;;
+  *) sed -n '2,15p' "$0"; exit 2 ;;
+esac

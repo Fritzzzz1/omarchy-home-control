@@ -106,12 +106,44 @@ header,.trans-nav{position:relative;z-index:20}.vol-control{position:relative;di
 .orbit.dragging .orb-hit{cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23081014' fill-opacity='.85' stroke='%23c0f2ff' stroke-opacity='.7'/%3E%3Cg fill='none' stroke='%23c0f2ff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 13.1A8.5 8.5 0 0 1 24 13.1M25.2 9.5L24 13.1 20.7 11.1M24 18.9A8.5 8.5 0 0 1 8 18.9M11.3 20.9L8 18.9 6.8 22.5'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='3.2' fill='%23c0f2ff'/%3E%3C/svg%3E") 16 16,grabbing}
 html.hide-strip .vol-control{display:none}html.hide-orbital :is(.orb-ring,.orb-readout,.orb-hit){display:none}html.hide-orbital .orbit--sphere{margin:0}
 @media(max-width:700px){.vol-pill .vol-number{display:none}.vol-strip{width:min(220px,calc(100vw - 40px))}}@media(prefers-reduced-motion:reduce){.vol-strip,.orb-arc,.orb-readout,.orb-ticks line,.vol-bar{transition:none}.orbit.speaking:not(.muted) .orb-arc{stroke-width:2.6;stroke-opacity:.9}}
+/* Karaoke: the reply as it is spoken on this machine's speakers. Lines ahead wait dim, the line being
+   spoken is lit, and inside it a soft edge sweeps word by word. The panel glides to keep it in view. */
+.agent-words{position:relative;--ft:0px;--fb:0px;-webkit-mask-image:linear-gradient(transparent,#000 var(--ft),#000 calc(100% - var(--fb)),transparent);mask-image:linear-gradient(transparent,#000 var(--ft),#000 calc(100% - var(--fb)),transparent);overscroll-behavior:contain;transition:color .4s}
+.agent-words.fade-top{--ft:44px}.agent-words.fade-bottom{--fb:52px}
+.agent-zone{transition:max-height .6s cubic-bezier(.16,1,.3,1)}.agent-zone.speaking{max-height:38vh}
+.agent-words.karaoke{--k-lit:#fff1e6;--k-said:#d9bfae;--k-up:#c2aea4;--k-glow:#e8a07a55;font-size:clamp(18px,1.55vw,30px);line-height:1.75;color:var(--k-up);text-wrap:pretty;padding:4px 0 6px}
+.kara-line{transition:opacity .7s ease,color .7s ease,filter .7s ease}
+.kara-line.up{opacity:.3}
+.kara-line.said{color:var(--k-said);opacity:.55}
+.kara-line.now{opacity:1}
+.kara-line.now .w{transition:color .25s,text-shadow .5s}
+.kara-line.now .w.lit{color:var(--k-lit);text-shadow:0 0 22px var(--k-glow)}
+.kara-line.now .w.cur{background:linear-gradient(var(--k-dir,90deg),var(--k-lit) calc(var(--p,0%) - 14%),var(--k-up) calc(var(--p,0%) + 14%));-webkit-background-clip:text;background-clip:text;color:transparent;transition:none}
+.kara-line.now .w.up{color:var(--k-up);opacity:.5}
+.agent-words.karaoke.done .kara-line{color:var(--k-said);opacity:.9}
+.kara-resume{position:absolute;left:50%;bottom:10px;transform:translate(-50%,8px);opacity:0;pointer-events:none;border:1px solid #d68b6544;background:#0d1214e6;color:#e4bb9f;border-radius:99px;font-size:10px;letter-spacing:1.6px;text-transform:uppercase;padding:7px 14px;transition:opacity .3s,transform .3s;z-index:2}
+.kara-resume.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+html[data-theme]:not([data-theme="transmission"]) .agent-words.karaoke{--k-lit:var(--accent);--k-said:var(--ink);--k-up:var(--dim);--k-glow:transparent}
+html[data-theme]:not([data-theme="transmission"]) .kara-resume{background:var(--panel);color:var(--accent);border-color:var(--line)}
+@media(max-height:750px){.agent-zone.speaking{max-height:36vh}.agent-words.karaoke{font-size:clamp(17px,1.35vw,24px)}}
+@media(prefers-reduced-motion:reduce){.kara-line,.kara-line.now .w,.agent-zone{transition:none}}
+/* The volume ring draws 30px outside the signal circle: reserve that room so the caption and the
+   request above never run into it. Without the ring, the plain spacing returns. */
+#signal-orbit{margin:30px 0}#signal-orbit+.signal-caption{margin-top:22px}
+html.hide-orbital #signal-orbit{margin:0}html.hide-orbital #signal-orbit+.signal-caption{margin-top:28px}
+@media(max-height:750px){#signal-orbit{margin:30px 0 26px}#signal-orbit+.signal-caption{margin-top:14px}}
+/* The circle takes whatever height the request and the agent's words leave free, so nothing overlaps
+   on a short screen or while the reply panel grows. --reserve is the ring, caption and padding. */
+.signal-area{container-type:size;min-height:150px;--reserve:132px}
+.signal,html .signal{width:max(90px,min(clamp(170px,25vh,310px),calc(100cqh - var(--reserve))))}
+@media(max-height:750px){.signal,html .signal{width:max(90px,min(155px,calc(100cqh - var(--reserve))))}.agent-zone.speaking{max-height:30vh}#transmission:has(.agent-zone.speaking) .signal-area{--reserve:96px}#transmission:has(.agent-zone.speaking) .signal-caption{display:none}}
+html.hide-orbital .signal-area{--reserve:72px}
 </style><script>try{const t=localStorage.getItem("home-voice-theme");if(["transmission","folio","relay","cyanotype","pebble","airtime"].includes(t))document.documentElement.dataset.theme=t;}catch{}try{const v=JSON.parse(localStorage.getItem("home-voice-volume-controls"))||{};for(const k of["orbital","strip"])if(v[k]===false)document.documentElement.classList.add("hide-"+k);}catch{}</script></head><body>
 <div id="transmission">
  <nav class="trans-nav" aria-label="Main navigation"><div class="theme-anchor"><div class="trans-brand"><span>◌</span>HOME</div><button class="theme-toggle" aria-label="Choose theme" aria-haspopup="dialog"><i class="theme-chip"></i><span class="theme-name">Transmission</span><span class="theme-caret">⌄</span></button></div><div class="trans-actions"><i id="trans-online" class="trans-connection" title="Connecting"></i><button id="analytics">Analytics ↗</button><div class="vol-control" id="vol-t"><div class="vol-pill"><button class="vol-glyph" aria-pressed="false" aria-label="Mute speech"></button><button class="vol-open" aria-expanded="false" aria-controls="vol-t-strip" aria-label="Speech volume"><span class="vol-number">—</span><span class="vol-mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></button></div><div class="vol-strip" id="vol-t-strip" hidden><div class="vol-bars" role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="140" aria-valuenow="100" aria-label="Speech volume on this machine's speakers"><div class="vol-handle"><span class="vol-tip"></span></div></div></div></div><button id="trans-fullscreen" aria-label="Toggle full screen">⛶</button></div></nav>
  <section class="request-zone" aria-label="Latest user request"><div class="trans-label">Your transmission</div><h1 class="request-text" id="request" dir="auto">Say something. I’m here.</h1><div id="request-preview" class="request-preview"></div></section>
  <section class="signal-area" aria-label="Live activity"><div class="orbit" id="signal-orbit"><button class="signal" id="signal" tabindex="-1" aria-hidden="true"><span class="signal-rim"></span><span class="signal-arc"></span><span id="signal-symbol" class="signal-symbol">◌</span><span id="signal-word" class="signal-word">LIVE</span></button><svg class="orb-ring" viewBox="0 0 100 100" aria-hidden="true"><circle class="orb-track" cx="50" cy="50" r="46" pathLength="100"/><circle class="orb-arc" cx="50" cy="50" r="46" pathLength="100" stroke-dasharray="100 0"/><g class="orb-ticks"/></svg><div class="orb-readout" aria-hidden="true"><span class="orb-label"></span><span class="orb-value"></span></div><div class="orb-hit" role="slider" tabindex="0" aria-label="Speech volume on this machine's speakers" aria-valuemin="0" aria-valuemax="140" aria-valuenow="100"></div></div><div id="signal-caption" class="signal-caption" role="status">Connecting</div></section>
- <section class="agent-zone" id="agent-zone" aria-label="Agent activity"><div class="agent-label"><span class="agent-star">✺</span><span id="agent-label">Agent · Standing by</span></div><div id="agent-words" class="agent-words" dir="auto">A thought becomes a request. A request becomes action.</div></section>
+ <section class="agent-zone" id="agent-zone" aria-label="Agent activity"><button class="kara-resume" id="kara-resume" tabindex="-1">↓ Back to live</button><div class="agent-label"><span class="agent-star">✺</span><span id="agent-label">Agent · Standing by</span></div><div id="agent-words" class="agent-words" dir="auto">A thought becomes a request. A request becomes action.</div></section>
  <footer class="trans-bottom"><span>VOICE LINK / HOME</span><span id="trans-footnote">Server activity · F for full screen</span></footer>
 </div>
 
@@ -158,11 +190,11 @@ function paint(data){
  $('connection').textContent=data.online?'Voice server reachable':'Voice server unavailable';$('dot').classList.toggle('online',data.online);
  const events=data.events,turn=data.turns.at(-1),completed=[...events].reverse().find(e=>e.text.startsWith('turn ok')),heard=[...events].reverse().find(e=>e.text.startsWith('heard ('));
  $('first').textContent=seconds(completed?.text.match(/first-audio=(\d+)/)?.[1]);$('duration').textContent=seconds(completed?.text.match(/turn ok (\d+)/)?.[1]);$('transcription').textContent=seconds(heard?.text.match(/heard \((\d+)ms/ )?.[1]);
- const recent=[...events].reverse().find(e=>/^(heard \(|tts \d+:|turn ok|turn failed|ignored:|agent process started)/.test(e.text));
+ const recent=[...events].reverse().find(e=>/^(heard \(|tts \d+:|turn ok|turn routed|turn failed|ignored:|router: dropped|agent process started)/.test(e.text));
  const fresh=recent && Date.now()-Date.parse(recent.at)<90000;let label='Standing by',detail='Ready for the next exchange from your phone.',step=-1,working=false;
  if(!data.online){label='Server unavailable';detail='The local voice server is not responding.';}
- else if(fresh){if(recent.text.startsWith('heard')||recent.text.startsWith('agent process started')){label='Working on a reply';detail='Input received. Waiting for the next server event.';step=1;working=true;}else if(recent.text.startsWith('tts ')){label='Giving words a voice';detail='The server is generating sentence audio.';step=2;working=true;}else if(recent.text.startsWith('turn ok')){label='Response delivered';detail='Audio sent to the phone. Playback happens there.';step=3;}else if(recent.text.startsWith('turn failed')){label='Something needs attention';detail=recent.text;}else{label='Waiting for clear speech';detail='The last input did not contain usable speech.';}}
- else if(recent && !/^(turn ok|turn failed|ignored:)/.test(recent.text)){detail='No recent turn update. See the latest events in the feed.';}
+ else if(fresh){if(recent.text.startsWith('heard')||recent.text.startsWith('agent process started')){label='Working on a reply';detail='Input received. Waiting for the next server event.';step=1;working=true;}else if(recent.text.startsWith('tts ')){label='Giving words a voice';detail='The server is generating sentence audio.';step=2;working=true;}else if(/^turn (ok|routed)/.test(recent.text)){label='Response delivered';detail='Audio sent to the phone. Playback happens there.';step=3;}else if(recent.text.startsWith('turn failed')){label='Something needs attention';detail=recent.text;}else{label='Waiting for clear speech';detail='The last input did not contain usable speech.';}}
+ else if(recent && !/^(turn ok|turn routed|turn failed|ignored:|router: dropped)/.test(recent.text)){detail='No recent turn update. See the latest events in the feed.';}
  $('status').textContent=label;$('detail').textContent=detail;$('stage').classList.toggle('working',working);for(let i=0;i<4;i++)$('step'+i).classList.toggle('active',i===step);
  const live=data.nowPlaying,liveLines=data.sentences||[];const pending=heard&&(!turn||Date.parse(heard.at)>Date.parse(turn.at));const conversationKey=JSON.stringify([turn,pending?heard:null,live?live.index:null,liveLines.length]);
  if(conversationKey!==lastConversation){lastConversation=conversationKey;const panel=$('conversation');panel.replaceChildren();const add=(who,text)=>{const d=document.createElement('div');d.className='utterance '+(who==='YOU'?'user':'');d.dir='auto';const name=document.createElement('span');name.className='who';name.textContent=who;d.append(name,document.createTextNode(text));panel.append(d);};if(pending){add('YOU',kind(heard.text)[1]);add('HOME','Waiting for the completed reply…');$('turn-time').textContent=time(heard.at)+' · input preview';}else if(live&&liveLines.length){add('YOU',turn?turn.user:(heard?kind(heard.text)[1]:''));speakLines(liveLines,live.index);$('turn-time').textContent=time(new Date().toISOString())+' · speaking';}else if(turn){add('YOU',turn.user);if(liveLines.length)speakLines(liveLines,-1);else add('HOME',turn.spoken);$('turn-time').textContent=time(turn.at);}else{panel.textContent='Start talking on your phone. Your conversation will appear here.';}}
@@ -216,8 +248,8 @@ function transmissionState(data,now){
  const currentUserAt=user?Date.parse(user.at):Infinity;
  const work=entries.filter(e=>e.type!=='user'&&Date.parse(e.at)>=currentUserAt);
  const lastWork=work.at(-1);
- const latest=[...events].reverse().find(e=>/^(heard \(|tts \d+:|turn ok|turn failed|ignored:|agent process started)/.test(e.text));
- const finished=latest&&/^(turn ok|turn failed|ignored:)/.test(latest.text);
+ const latest=[...events].reverse().find(e=>/^(heard \(|tts \d+:|turn ok|turn routed|turn failed|ignored:|router: dropped|agent process started)/.test(e.text));
+ const finished=latest&&/^(turn ok|turn routed|turn failed|ignored:|router: dropped)/.test(latest.text);
  const latestTime=Math.max(Date.parse(latest?.at)||0,Date.parse(lastWork?.at)||0,Date.parse(user?.at)||0);
  const fresh=now-latestTime<90000;
  const userAfterFinish=user&&Date.parse(user.at)>(Date.parse(latest?.at)||0);
@@ -245,8 +277,91 @@ function paintTransmission(data){
  for(const [name,on] of [['offline',!data.online],['receiving',data.online&&receiving],['working',data.online&&!receiving&&s.active]])$('signal-orbit').classList.toggle(name,on);
  $('signal-symbol').textContent=receiving?'⌁':s.active?'✺':'◌';$('signal-word').textContent=!data.online?'OFFLINE':receiving?'RECEIVED':s.active?'WORKING':'LIVE';
  $('signal-caption').textContent=receiving?'Incoming transmission':s.caption;
- $('agent-zone').classList.toggle('active',s.active);$('agent-label').textContent=s.label;$('agent-words').textContent=s.text;
+ $('agent-zone').classList.toggle('active',s.active);$('agent-label').textContent=s.label;Words.paint(data,s);
 }
+// The agent's words in the Transmission view. Plain text while he works; karaoke while this machine
+// speaks his reply. The server only says which sentence is playing (polled), so the sweep inside a
+// sentence is an estimate: characters per second, learnt from how long each sentence actually took.
+const Words={el:$('agent-words'),mode:'',text:'',lines:[],idx:-1,startedAt:0,cps:14,lastPlaying:0,promptAt:0,
+ holdUntil:0,target:null,raf:0,words:[],weights:[],total:1,
+ reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,
+ paint(data,s){
+  const now=performance.now(),np=data.online&&data.nowPlaying,lines=(data.sentences||[]).map(t=>t||'');
+  if(np&&lines[np.index]){
+   if(this.mode!=='karaoke'||lines[0]!==this.lines[0]||lines.length!==this.lines.length||lines.some((l,i)=>l!==this.lines[i]))this.build(lines,np.index,data.rate);
+   // A long pause between sentences may have shown the reply as finished; the next sentence revives it.
+   if(this.el.classList.contains('done')){this.el.classList.remove('done');this.idx=-1;this.advance(np.index,now);}
+   else if(np.index!==this.idx)this.advance(np.index,now);
+   this.lastPlaying=now;this.promptAt=s.prompt?.at||0;this.speaking(true);
+   $('agent-label').textContent='Agent · Speaking';$('agent-zone').classList.add('active');return;
+  }
+  // Between two sentences nothing is playing for a moment: hold the line. After that the reply stays
+  // up, fully said, until a new request arrives or the agent starts working again.
+  if(this.mode==='karaoke'&&data.online&&now-this.lastPlaying<3000){this.speaking(true);$('agent-label').textContent='Agent · Speaking';$('agent-zone').classList.add('active');return;}
+  if(this.mode==='karaoke'&&!s.active&&(s.prompt?.at||0)<=this.promptAt+1000){this.finish();return;}
+  this.plain(s.text,s.active);
+ },
+ speaking(on){$('agent-zone').classList.toggle('speaking',on);},
+ build(lines,idx,rate){
+  const fresh=this.mode!=='karaoke'||lines[0]!==this.lines[0];
+  this.mode='karaoke';this.lines=lines.slice();this.text='';
+  if(fresh){this.cps=14*(Number(rate)||1);this.idx=-1;this.el.scrollTop=0;}
+  const el=this.el;el.className='agent-words karaoke';el.replaceChildren();
+  lines.forEach((text,i)=>{if(!text)return;const line=document.createElement('span');line.className='kara-line';line.dataset.i=i;line.dir='auto';
+   for(const part of text.split(/(\s+)/)){if(!part)continue;if(/^\s+$/.test(part)){line.append(part);continue;}const w=document.createElement('span');w.className='w';w.textContent=part;line.append(w);}
+   el.append(line,' ');});
+  const keep=this.idx;this.idx=-1;if(keep>=0)this.advance(keep,this.startedAt,true);else this.advance(idx,performance.now());
+ },
+ advance(idx,now,rebuild){
+  // A sentence that followed the previous one teaches the speaking rate.
+  if(!rebuild&&idx===this.idx+1&&this.idx>=0){const secs=(now-this.startedAt)/1000,len=this.lines[this.idx]?.length||0;if(secs>.6&&secs<40&&len>8)this.cps=this.cps*.5+(len/secs)*.5;}
+  this.idx=idx;if(!rebuild)this.startedAt=now;
+  for(const line of this.el.querySelectorAll('.kara-line')){const i=+line.dataset.i;line.className='kara-line '+(i<idx?'said':i===idx?'now':'up');}
+  const cur=this.el.querySelector('.kara-line.now');this.words=cur?[...cur.querySelectorAll('.w')]:[];
+  // Longer words and punctuation pauses take longer to say.
+  this.weights=this.words.map(w=>w.textContent.length+(/[.!?…׃]["'”]?$/.test(w.textContent)?5:/[,;:—–]$/.test(w.textContent)?3:0)+1);
+  this.total=this.weights.reduce((a,b)=>a+b,0)||1;
+  if(cur)cur.style.setProperty('--k-dir',/[֐-ࣿ]/.test(cur.textContent)?'270deg':'90deg');
+  this.loop();
+ },
+ finish(){if(this.el.classList.contains('done'))return;this.speaking(false);this.el.classList.add('done');for(const line of this.el.querySelectorAll('.kara-line'))line.className='kara-line said';this.words=[];$('agent-label').textContent='Agent · Last response';},
+ plain(text,active){
+  this.speaking(false);
+  if(this.mode==='plain'&&text===this.text)return;
+  const wasMode=this.mode,prev=this.text,el=this.el,atBottom=el.scrollHeight-el.clientHeight-el.scrollTop<40;
+  this.mode='plain';this.text=text;this.lines=[];this.idx=-1;this.words=[];
+  el.className='agent-words';el.textContent=text;
+  // Streaming work grows at the bottom: follow it. A new answer starts from the top.
+  if(active&&wasMode==='plain'&&text.startsWith(prev.slice(0,40))&&atBottom)this.glide(el.scrollHeight);else{el.scrollTop=0;this.target=null;}
+  this.fades();
+ },
+ // Where the sweep is in the current sentence, 0–1.
+ progress(now){const dur=Math.max(.8,(this.lines[this.idx]?.length||1)/this.cps)*1000;return Math.min(1,(now-this.startedAt)/dur);},
+ loop(){if(!this.raf)this.raf=requestAnimationFrame(t=>this.frame(t));},
+ frame(t){
+  this.raf=0;const now=performance.now();let more=false;
+  if(this.words.length&&this.mode==='karaoke'&&!this.el.classList.contains('done')){
+   const playing=now-this.lastPlaying<3000;const at=(playing?this.progress(now):1)*this.total;let sum=0,cur=null;
+   this.words.forEach((w,i)=>{const start=sum;sum+=this.weights[i];const st=at>=sum?'lit':at>start?'cur':'up';if(w.className!=='w '+st)w.className='w '+st;if(st==='cur'){w.style.setProperty('--p',Math.round((at-start)/this.weights[i]*128-14)+'%');cur=w;}});
+   const focus=cur||this.words.findLast(w=>w.classList.contains('lit'))||this.words[0];
+   if(focus&&now>this.holdUntil){const top=focus.offsetTop;this.target=Math.max(0,top-this.el.clientHeight*.36);}
+   more=playing;
+  }
+  if(this.target!=null&&now>this.holdUntil){const d=this.target-this.el.scrollTop;if(Math.abs(d)<.5||this.reduced){this.el.scrollTop=this.target;}else{this.el.scrollTop+=d*.09;more=true;}}
+  this.fades();
+  $('kara-resume').classList.toggle('show',this.mode==='karaoke'&&now<this.holdUntil&&!this.el.classList.contains('done'));
+  if(more||now<this.holdUntil)this.loop();
+ },
+ glide(top){this.target=Math.min(top,this.el.scrollHeight-this.el.clientHeight);this.loop();},
+ fades(){const el=this.el,over=el.scrollHeight-el.clientHeight>2;el.classList.toggle('fade-top',over&&el.scrollTop>4);el.classList.toggle('fade-bottom',over&&el.scrollHeight-el.clientHeight-el.scrollTop>4);},
+ // Scrolling by hand reads back freely; the view returns to the live line after a few quiet seconds.
+ hold(){this.holdUntil=performance.now()+6000;this.target=null;this.loop();}
+};
+for(const ev of ['wheel','touchmove','keydown'])Words.el.addEventListener(ev,()=>Words.hold(),{passive:true});
+Words.el.addEventListener('pointerdown',e=>{if(e.offsetX>Words.el.clientWidth)Words.hold();});
+Words.el.addEventListener('scroll',()=>Words.fades(),{passive:true});
+$('kara-resume').onclick=()=>{Words.holdUntil=0;Words.loop();};
+addEventListener('resize',()=>{Words.fades();Words.loop();});
 $('freeze').onclick=()=>{frozen=!frozen;$('freeze').textContent=frozen?'Resume feed':'Pause feed';$('freeze').setAttribute('aria-pressed',String(frozen));};
 // Speech volume: the voice server's level and mute for this machine's speakers, one copy shared
 // by both controls. A change shows at once and is sent at most every 150 ms while dragging; the
@@ -334,7 +449,7 @@ function savedVolumeControls(){let saved={};try{saved=JSON.parse(localStorage.ge
 document.querySelectorAll('.vol-chip').forEach(chip=>chip.onclick=()=>{const shown={};document.querySelectorAll('.vol-chip').forEach(c=>shown[c.dataset.control]=c.getAttribute('aria-pressed')==='true');shown[chip.dataset.control]=!shown[chip.dataset.control];applyVolumeControls(shown);try{localStorage.setItem(VOL_CONTROLS_KEY,JSON.stringify(shown));}catch{}});
 applyVolumeControls(savedVolumeControls());
 window.addEventListener('storage',event=>{if(event.key===VOL_CONTROLS_KEY)applyVolumeControls(savedVolumeControls());});
-async function poll(){try{const r=await fetch('/api/activity',{signal:AbortSignal.timeout(4000)});if(!r.ok)throw Error();paint(await r.json());}catch{transDisconnected();$('connection').textContent='Monitor disconnected · retrying';$('dot').classList.remove('online');$('status').textContent='Connection interrupted';$('detail').textContent='Displayed events may be out of date. Reconnecting automatically.';$('stage').classList.remove('working');}finally{setTimeout(poll,1000);}}
+async function poll(){try{const r=await fetch('/api/activity',{signal:AbortSignal.timeout(4000)});if(!r.ok)throw Error();paint(await r.json());}catch{transDisconnected();$('connection').textContent='Monitor disconnected · retrying';$('dot').classList.remove('online');$('status').textContent='Connection interrupted';$('detail').textContent='Displayed events may be out of date. Reconnecting automatically.';$('stage').classList.remove('working');}finally{setTimeout(poll,Words.mode==='karaoke'&&performance.now()-Words.lastPlaying<3000?300:1000);}}
 $('clock').textContent=time(Date.now());
 setInterval(()=>{$('clock').textContent=time(Date.now());},1000);poll();
 </script></body></html>

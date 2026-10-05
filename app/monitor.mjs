@@ -137,7 +137,7 @@ async function snapshot() {
   const { online, live } = await fetchLiveState();
   return {
     online, events: readEvents(), turns: readTurns(), session: sessionSnapshot(),
-    nowPlaying: live?.nowPlaying || null, sentences: live?.sentences || [], volume: live?.volume || null,
+    nowPlaying: live?.nowPlaying || null, sentences: live?.sentences || [], rate: live?.rate || 1, volume: live?.volume || null,
     at: new Date().toISOString(),
   };
 }
