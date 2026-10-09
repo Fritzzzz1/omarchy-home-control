@@ -8,7 +8,7 @@ For Other providers/runtimes your implementing agent should know the trick.
 
 ## Stack
 
-- `server.mjs` (Node) — the one server, binds `127.0.0.1`: the desktop dashboard at `/`, the phone page at `/mobile/`.
+- `server.mjs` (Node) — the one server, binds `127.0.0.1`: home-control at `/`, home-control-mobile at `/mobile/`.
   On the Home Server its HTTP plumbing (routing, body reads, JSON errors, files, redirects, `GET /health`, SIGTERM)
   is the shared layer `~/dev/home-server/shared/js/home-app.mjs`; elsewhere, keep that file at the same relative path
 - whisper.cpp `whisper-server` (local) or a remote endpoint — transcription
@@ -38,7 +38,7 @@ phone (Silero VAD) -> server.mjs -> transcription -> agent -> cleanup for voice 
 Localhost-bound; `tailscale serve` exposes it over tailnet HTTPS behind a passphrase gate. No
 Funnel, no public exposure.
 
-Optional desktop dashboard (on by default): live conversation + agent activity, installed as an
+Optional home-control page (on by default): live conversation + agent activity, installed as an
 Omarchy web-app launcher.
 
 ## Configuration
@@ -59,13 +59,13 @@ home-control-ctl url
 home-control-ctl restart     # asks for confirmation; ends any live turn
 ```
 
-The dashboard is part of the server: it restarts with it.
+home-control is part of the server: it restarts with it.
 
 ## Limits
 
 - Verified only on the tested chain above
 - Linux + systemd user services only
-- Phone page loads jsdelivr + Google Fonts, not vendored — needs internet
+- home-control-mobile loads jsdelivr + Google Fonts, not vendored — needs internet
 - Agent unsandboxed under `VOICE_ROOT`, minus a deny list (`secrets/`, `credentials*`, `.env*`)
 - Passphrase-only auth, on top of the tailnet
 - Traffic goes to whatever providers are configured — local by default, remote if pointed there

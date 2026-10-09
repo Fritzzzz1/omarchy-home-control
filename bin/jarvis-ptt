@@ -6,14 +6,16 @@
 # key sends it as a turn. The server treats it exactly like a phone turn: same transcription,
 # router, agent, speech on these speakers, input hook, transcript and dashboards.
 #
-#   jarvis-ptt toggle    flip the local-mic path on/off (toast)
+#   jarvis-ptt toggle    flip the local-mic path on/off (short toast)
 #   jarvis-ptt record    start recording; if already recording, stop and send
 #   jarvis-ptt cancel    drop the recording in progress
+#   jarvis-ptt send-text "words"   send already-transcribed text as a turn (used by voxtype-jarvis)
 #   jarvis-ptt skip      stop whatever the agent is saying (the phone's skip, hush variant)
 #   jarvis-ptt status    one line: on/off, mic present, recording or not
 #
 # Config comes from ~/.config/home-control/config.env (VOICE_PORT, VOICE_STATE, VOICE_TOKEN).
-# The mic is any PipeWire source whose description matches JARVIS_PTT_MIC (default: DJI).
+# No toasts while it works: the only ones are the toggle's on/off and errors/refusals (4 s).
+# What was heard and answered goes to ptt.log. The mic is any PipeWire source whose description matches JARVIS_PTT_MIC (default: DJI).
 set -u
 
 CONFIG="${HOME}/.config/home-control/config.env"
@@ -33,16 +35,10 @@ WAV="$DIR/utterance.wav"
 JAR="$DIR/cookies"
 LOG="$DIR/ptt.log"
 
-TOAST_ID="$DIR/toast.id"
-METER_PID="$DIR/meter.pid"
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
-# One toast for the whole exchange, replaced in place. `show` keeps it open (-t 0);
-# `show_for MS` lets it close on its own. The id survives across invocations in a file.
-_notify() { local t=$1 title=$2 body=$3 id; id=$(cat "$TOAST_ID" 2>/dev/null); notify-send -p -a Jarvis -t "$t" ${id:+-r "$id"} "$title" "$body" > "$TOAST_ID.new" 2>/dev/null && mv "$TOAST_ID.new" "$TOAST_ID"; }
-show()     { _notify 0 "${2:-Jarvis}" "$1"; log "$1"; }
-show_for() { _notify "$1" "${3:-Jarvis}" "$2"; log "$2"; rm -f "$TOAST_ID"; }
-toast()    { show_for 4000 "$1"; }
+# A short toast (4 s) for the toggle and for errors/refusals; nothing else shows on screen.
+toast() { notify-send -a Jarvis -t 4000 Jarvis "$1" >/dev/null 2>&1; log "$1"; }
 
 mic_node() {
   # The node name of the first source whose description matches; empty when the mic is absent.
@@ -88,92 +84,62 @@ cmd_record() {
   # Same shape the phone sends: 16 kHz mono s16 WAV.
   pw-record --target "$node" --rate 16000 --channels 1 --format s16 "$WAV" &
   echo $! > "$PID"
-  show "listening…" "Jarvis · Super+J to send, Super+Alt+J to cancel"
-  meter_loop & echo $! > "$METER_PID"; disown
+  log "recording"
 }
 
-# Every 200 ms: the last 200 ms of the growing WAV → a level bar and the elapsed time, into
-# the same toast. Stops when the recording pid file goes away (send or cancel).
-meter_loop() {
-  local t0=$(date +%s.%N) body
-  while [ -f "$PID" ]; do
-    body=$(python3 - "$WAV" "$t0" <<'PY' 2>/dev/null
-import sys,os,array,math,time
-f,t0=sys.argv[1],float(sys.argv[2]); n=6400  # 200 ms of 16 kHz s16 mono
-try:
-    size=os.path.getsize(f); fh=open(f,'rb'); fh.seek(max(44,size-n)); raw=fh.read(n)
-except Exception: raw=b''
-raw=raw[:len(raw)//2*2]; a=array.array('h'); a.frombytes(raw)
-rms=math.sqrt(sum(v*v for v in a)/len(a))/32768 if len(a) else 0.0
-db=20*math.log10(rms) if rms>0 else -60.0
-lvl=max(0,min(24,int((db+50)/50*24)))
-el=time.time()-t0
-print(f"{'█'*lvl}{'░'*(24-lvl)}  {el:4.1f}s")
-PY
-)
-    _notify 0 "Jarvis · listening" "$body"
-    sleep 0.2
-  done
+# POST the turn in the background and read its event stream so the turn runs to the end; heard
+# and reply text go to ptt.log. The reply plays on the speakers as always.
+# Arguments are the curl options that carry the turn (audio or JSON body).
+stream_turn() {
+  (
+    curl -s -N -b "$JAR" "$@" "$BASE/api/turn" \
+    | python3 -u -c '
+import sys,json,time
+def log(m): open(sys.argv[1],"a").write(time.strftime("%H:%M:%S")+" "+m+"\n")
+reply=""
+for line in sys.stdin:
+    if not line.startswith("data: "): continue
+    try: ev=json.loads(line[6:])
+    except Exception: continue
+    t=ev.get("type")
+    if t=="transcript": log("heard: "+str(ev.get("text","")))
+    elif t in ("partial","text"): reply=ev.get("full") or ev.get("text") or reply
+    elif t=="error": log("error: "+str(ev.get("text") or ev.get("error") or ""))
+    elif t=="ignored": log("ignored (dropped by Jev or empty recording)")
+if reply: log("reply: "+reply)
+' "$LOG"
+  ) >/dev/null 2>&1 &
+  disown
 }
-
-stop_meter() { [ -f "$METER_PID" ] && { kill "$(cat "$METER_PID")" 2>/dev/null; rm -f "$METER_PID"; }; }
 
 cmd_send() {
   recording || { toast "not recording"; return 1; }
   kill -INT "$(cat "$PID")" 2>/dev/null
   # pw-record was started by a previous invocation: wait for it to finish writing the header.
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$(cat "$PID")" 2>/dev/null || break; sleep 0.1; done
-  rm -f "$PID"; stop_meter
+  rm -f "$PID"
   [ -s "$WAV" ] || { toast "nothing recorded"; return 1; }
-  show "sent · transcribing…"
-  # The turn streams events; each one updates the same toast: status → heard → the reply as it
-  # streams → closes a few seconds after the turn ends. The reply plays on the speakers as always.
-  (
-    curl -s -N -b "$JAR" -H 'Content-Type: audio/wav' --data-binary "@$WAV" "$BASE/api/turn" \
-    | python3 -u - "$TOAST_ID" <<'PY'
-import sys,json,subprocess,os
-idf=sys.argv[1]
-def _id():
-    try: return open(idf).read().strip()
-    except Exception: return ''
-def show(body,title='Jarvis',t=0):
-    i=_id(); cmd=['notify-send','-p','-a','Jarvis','-t',str(t)]+(['-r',i] if i else [])+[title,body]
-    out=subprocess.run(cmd,capture_output=True,text=True).stdout.strip()
-    if out: open(idf,'w').write(out)
-heard=''; reply=''; ended=False; title='Jarvis'
-for line in sys.stdin:
-    if not line.startswith('data: '): continue
-    try: ev=json.loads(line[6:])
-    except Exception: continue
-    t=ev.get('type')
-    if t=='status': show(f"{heard}\n… {ev.get('text','')}" if heard else f"… {ev.get('text','')}", title)
-    elif t=='transcript': heard=f"you: {ev.get('text','')}"; show(heard, title)
-    elif t=='routed':
-        # Jev answered this one itself (a TV action, away mode…): no agent turn is coming.
-        title=f"handled by Jev · {ev.get('label','')}"; show(heard, title)
-    elif t in ('partial','text'): reply=ev.get('full') or ev.get('text') or reply; show(f"{heard}\nJarvis: {reply}", title)
-    elif t=='ignored':
-        # Words were heard and still nothing comes back: Jev dropped the turn. No words: empty recording.
-        if heard: show(f"{heard}\n(no reply coming)", 'dropped by Jev', t=6000)
-        else: show('nothing usable in that recording', 'Jarvis', t=4000)
-        ended=True
-    elif t=='error': show('error: '+str(ev.get('text') or ev.get('error') or ''), title, t=6000); ended=True
-    elif t=='done': show(f"{heard}\nJarvis: {reply}" if reply else heard, title, t=8000); ended=True
-if not ended: show(f"{heard}\nJarvis: {reply}" if reply else (heard or 'turn ended'), title, t=8000)
-try: os.remove(idf)
-except Exception: pass
-PY
-  ) >/dev/null 2>&1 &
-  disown
+  log "sent audio"
+  stream_turn -H 'Content-Type: audio/wav' --data-binary "@$WAV"
+}
+
+cmd_send_text() {
+  local text=${1:-}
+  [ -n "${text//[[:space:]]/}" ] || return 0
+  login || return 1
+  if busy; then toast "Jarvis is busy — Super+U to cut him off"; return 1; fi
+  log "sent text"
+  stream_turn -H 'Content-Type: application/json' \
+    --data-binary "$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "$text")"
 }
 
 cmd_cancel() {
   recording || { [ "${1:-}" = quiet ] || toast "not recording"; return 0; }
-  kill -INT "$(cat "$PID")" 2>/dev/null; rm -f "$PID" "$WAV"; stop_meter
-  [ "${1:-}" = quiet ] || show_for 2000 "cancelled"
+  kill -INT "$(cat "$PID")" 2>/dev/null; rm -f "$PID" "$WAV"
+  log "cancelled"
 }
 
-cmd_skip() { login || return 1; curl -s -o /dev/null -X POST -b "$JAR" "$BASE/api/skip?hush=1"; toast "skipped"; }
+cmd_skip() { login || return 1; curl -s -o /dev/null -X POST -b "$JAR" "$BASE/api/skip?hush=1"; log "skipped"; }
 
 cmd_status() {
   local node; node=$(mic_node)
@@ -182,7 +148,7 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  toggle) cmd_toggle ;; record) cmd_record ;; send) cmd_send ;; cancel) cmd_cancel ;;
+  toggle) cmd_toggle ;; record) cmd_record ;; send) cmd_send ;; send-text) shift; cmd_send_text "${1:-}" ;; cancel) cmd_cancel ;;
   skip) cmd_skip ;; status) cmd_status ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
 esac

@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
-<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <meta name="theme-color" content="#101313">
 <meta name="apple-mobile-web-app-title" content="__PWA_NAME__">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>__PWA_NAME__ · voice</title>
+<title>__PWA_NAME__</title>
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.30/dist/bundle.min.js"></script>
@@ -93,6 +93,7 @@ body>header #autoToggle[aria-pressed="true"]{background:var(--green);border-colo
 @media(max-width:899px){#top #modeText{min-width:0;flex:1}#cancelRec{margin-left:auto}}
 @media(min-width:900px){#top{position:relative}#cancelRec{position:absolute;right:28px;top:24px}}
 </style>
+<script src="/_home/nav.js" defer></script>
 </head>
 <body>
 <header>
@@ -306,7 +307,7 @@ const MACHINE_MS = 2000, MACHINE_GRACE_MS = 3500;
 let machineTimer = null, machineHeardAt = 0;
 const readMachine = async () => {
   try {
-    const s = await (await fetch('/api/state')).json();
+    const s = await (await fetch('api/state')).json();
     if (s.nowPlaying) machineHeardAt = Date.now();
     // One sentence ends before the next one spawns, so nowPlaying is null for a moment in the
     // middle of a reply. Holding the button past a single empty read keeps it from going out
@@ -384,7 +385,7 @@ const earOn = () => {
 // A return during a reply, or while muted, defers the repair to the next earOn.
 let audioCtx = null, micDead = false, micStale = false, frames = 0;   // frames: VAD frames seen, proof the graph is alive
 const micState = () => { const t = vad?._stream?.getAudioTracks?.()[0]; return `ctx=${audioCtx?.state}@${audioCtx?.sampleRate} track=${t ? t.readyState + (t.muted ? '/muted' : '') : 'none'} frames=${frames}`; };
-const clientLog = (msg) => fetch('/api/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg }) }).catch(() => {});
+const clientLog = (msg) => fetch('api/client-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg }) }).catch(() => {});
 // iOS home-screen app quirk: with the translucent status bar the page is drawn from the very top of
 // the screen, but the viewport height leaves out the status bar, so a strip that tall stays empty under
 // the controls. Only when that exact mismatch shows (standalone, portrait, the missing height equals the
@@ -490,8 +491,8 @@ async function turn(init) {
   alive();
   liveStreams++;
   try {
-    let res = await fetch('/api/turn', { method: 'POST', ...init, signal: watchdog.signal });
-    for (let wait = 0; res.status === 409 && wait < 90; wait += 2) { setMode('thinking', 'Finishing the last answer first'); await sleep(2000); if (mine !== currentTurn) return; res = await fetch('/api/turn', { method: 'POST', ...init, signal: watchdog.signal }); }
+    let res = await fetch('api/turn', { method: 'POST', ...init, signal: watchdog.signal });
+    for (let wait = 0; res.status === 409 && wait < 90; wait += 2) { setMode('thinking', 'Finishing the last answer first'); await sleep(2000); if (mine !== currentTurn) return; res = await fetch('api/turn', { method: 'POST', ...init, signal: watchdog.signal }); }
     if (res.status === 401) { location.reload(); return; }
     if (res.status === 409) { setMode('error', 'The server is still busy; try again in a moment'); return; }
     if (!res.ok) { setMode('error', 'Error ' + res.status); return; }
@@ -567,7 +568,7 @@ function playNext(mine) {
   player.play().catch((e) => { if (token === playToken) settle(e?.name === 'NotAllowedError' ? 'refused' : 'failed'); });
 }
 const whilePlaying = () => new Promise((resolve) => { const tick = () => (playing || queue.length ? setTimeout(tick, 120) : resolve()); tick(); });
-function interrupt() { if (!busy) return; currentTurn++; playToken++; queue = []; player.pause(); playing = false; busy = false; if (nowSpan) { nowSpan.classList.remove('now'); nowSpan = null; } earOn(); fetch('/api/skip', { method: 'POST' }).catch(() => {}); }
+function interrupt() { if (!busy) return; currentTurn++; playToken++; queue = []; player.pause(); playing = false; busy = false; if (nowSpan) { nowSpan.classList.remove('now'); nowSpan = null; } earOn(); fetch('api/skip', { method: 'POST' }).catch(() => {}); }
 // Plays sentences outside a live turn (a caught-up reply, or one iOS held back) the way a live reply
 // plays: mic off while it plays, back on when the queue is done. During a turn they join its queue.
 async function playPieces(pieces) {
@@ -599,7 +600,7 @@ $('skip').onclick = () => {
   // meant on this machine: drop the sentence being spoken and the ones already queued behind it.
   // A relay reply renders sentence by sentence, so the rest of it still comes — tap again to skip
   // the next one. Silencing a whole reply in one tap is the reset button's job, not this one's.
-  fetch('/api/skip', { method: 'POST' }).catch(() => {});
+  fetch('api/skip', { method: 'POST' }).catch(() => {});
   // The button is deliberately left lit: the reply goes on, and the next tap skips the next
   // sentence. Darkening it here would cost a tap while the poll caught up. Once the reply really
   // is over the poll puts it out, and a tap that beats it by a second skips nothing and harms nothing.
@@ -690,7 +691,7 @@ earMute.onclick = () => setEarMuted(!earMuted);
 // on this machine's speakers, so the phone starts with its earphone muted; away, the phone is the
 // only speaker and starts unmuted. Read once per page load. (setSpeechRate is a const further
 // down; this callback runs after load, so it is defined by then.)
-fetch('/api/state').then((r) => r.json()).then((s) => {
+fetch('api/state').then((r) => r.json()).then((s) => {
   const r = Number(s?.rate); if (RATES.includes(r) && r !== speechRate) setSpeechRate(r, false);
   if (s?.voiceInput === false) hint.textContent = 'Voice input is off on the server (whisper not running). Typing still works.';
   if (s?.away === false) setEarMuted(true);
@@ -704,7 +705,7 @@ let historyPushed = false;
 // or caught up), so the numbers stay current without reopening the panel.
 const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
 const fmtCost = (n) => '$' + Number(n || 0).toFixed(2);
-const fetchStats = () => fetch('/api/session-stats').then((r) => r.json()).then((s) => {
+const fetchStats = () => fetch('api/session-stats').then((r) => r.json()).then((s) => {
   $('statTurns').textContent = s.turns ?? 0;
   $('statTokens').textContent = fmtTokens(s.tokens ?? 0);
   $('statCost').textContent = fmtCost(s.costUsd);
@@ -715,7 +716,7 @@ window.addEventListener('popstate', () => { if ($('history').classList.contains(
 $('refresh').onclick = () => location.reload();
 $('transcript').onclick = openHistory;
 $('close').onclick = () => { closeHistory(false); $('transcript').focus(); };
-document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if ($('history').classList.contains('open')) $('close').click(); if ($('settingsPanel').classList.contains('open')) closeSettings(); });
+document.addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if ($('history').classList.contains('open')) { e.preventDefault(); $('close').click(); } if ($('settingsPanel').classList.contains('open')) { e.preventDefault(); closeSettings(); } });
 
 // ---- settings: three fields (mode/text/speed), each remembered per device. All three segmented
 // controls share the same "highlight the active option" shape, so that part is a single helper.
@@ -731,7 +732,7 @@ const setTextFlow = (t) => { textFlow = t === 'flowing' ? 'flowing' : 'instant';
 const rateSeg = segButtons('.seg-rate', 'rate', (v) => Number(v) === speechRate);
 // The same number governs this machine's own speakers, so a change here is
 // pushed to the server, and the server's value wins on load — the two never drift apart.
-const setSpeechRate = (r, push = true) => { r = Number(r); speechRate = RATES.includes(r) ? r : 1; try { localStorage.setItem('speechRate', String(speechRate)); } catch {} rateSeg.apply(); applyRate(); if (push) fetch('/api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {}); };
+const setSpeechRate = (r, push = true) => { r = Number(r); speechRate = RATES.includes(r) ? r : 1; try { localStorage.setItem('speechRate', String(speechRate)); } catch {} rateSeg.apply(); applyRate(); if (push) fetch('api/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rate: speechRate }) }).catch(() => {}); };
 rateSeg.apply();
 
 rateSeg.buttons.forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
@@ -756,7 +757,7 @@ $('helpBtn').onclick = async () => {
     turnAbort?.abort(); turnAbort = null;
     busy = false; dictating = false; dictateFrames = [];
     // this machine's speakers: stop now, and stay quiet for the rest of a turn still running
-    fetch('/api/skip?hush=1', { method: 'POST' }).catch(() => {});
+    fetch('api/skip?hush=1', { method: 'POST' }).catch(() => {});
     closeSettings();
     // the microphone: permission first (once denied, iOS won't ask again from the page), then reopen it
     let perm = null;
@@ -770,9 +771,9 @@ $('helpBtn').onclick = async () => {
     }
     // the backlog: every turn in it is marked seen, then the poller shows their text
     try {
-      let res = await fetch('/api/events?after=' + eventsCursor);
+      let res = await fetch('api/events?after=' + eventsCursor);
       let data = res.ok ? await res.json() : null;
-      if (data?.bootId && data.bootId !== eventsBootId) { res = await fetch('/api/events?after=0'); data = res.ok ? await res.json() : null; }
+      if (data?.bootId && data.bootId !== eventsBootId) { res = await fetch('api/events?after=0'); data = res.ok ? await res.json() : null; }
       for (const ev of data?.events || []) if (ev.turnId) mutedTurns.add(ev.turnId);
     } catch {}
     pollEvents();
@@ -800,7 +801,7 @@ $('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preven
 // Shared by the header's #reset and the transcript panel's #clearLog — same effect either way.
 // /api/reset clears the session before it responds, so the stats read back zero right after.
 const resetConversation = async () => {
-  await fetch('/api/reset', { method: 'POST' });
+  await fetch('api/reset', { method: 'POST' });
   logEl.innerHTML = ''; currentGroup = null; heldAudio = null;
   reply.textContent = ''; reply.style.display = 'none'; heard.classList.add('hidden');
   hint.style.display = ''; hint.textContent = nextStep() || '';
@@ -809,7 +810,7 @@ const resetConversation = async () => {
 $('reset').onclick = resetConversation;
 $('clearLog').onclick = resetConversation;
 
-fetch('/api/transcript').then((r) => r.json()).then((rows) => { for (const row of rows.slice(-20)) { add('user', row.user); add('agent', row.spoken); } }).catch(() => {});
+fetch('api/transcript').then((r) => r.json()).then((rows) => { for (const row of rows.slice(-20)) { add('user', row.user); add('agent', row.spoken); } }).catch(() => {});
 
 // ---- catch-up polling: reads the server's event log while this tab is foregrounded, so
 // anything this device missed — a delayed relay reply from another session, or this same
@@ -868,7 +869,7 @@ const handleCaughtUpEvent = async (ev) => {
 };
 let pollInFlight = false, pollAgain = false;   // polls never overlap; one asked for meanwhile runs right after
 const fetchAndApplyEvents = async () => {
-  const res = await fetch('/api/events?after=' + eventsCursor);
+  const res = await fetch('api/events?after=' + eventsCursor);
   if (!res.ok) return;
   const data = await res.json();
   if (data.bootId && data.bootId !== eventsBootId) {

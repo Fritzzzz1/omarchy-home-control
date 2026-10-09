@@ -10,6 +10,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { createApp, json, sendFile, redirect } from '../../../shared/js/home-app.mjs';
 import { runInputHook } from './input-hook.mjs';
@@ -395,6 +397,7 @@ const WHISPER_URL = (process.env.WHISPER_URL || '').replace(/\/$/, '');
 const WHISPER_PATH = process.env.WHISPER_PATH || '/inference';   // the server's inference path (whisper.cpp --inference-path)
 const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'home-control', 'models', 'ggml-large-v3-turbo.bin');
 let whisper = null;
+const STT_TIMEOUT_MS = 60000;   // a transcription that has not answered by then has failed
 const WHISPER_BASE = () => WHISPER_URL || `http://${HOST}:${WHISPER_PORT}`;
 const startWhisper = () => {
   if (WHISPER_URL) return;            // transcription lives on another machine
@@ -421,7 +424,7 @@ const HALLUCINATIONS = /^(you|oops|thank you|thanks|thank you very much|thanks f
 const whisperReady = async (onStage) => {
   if (!WHISPER_URL && !whisper) { startWhisper(); onStage?.('loading the ear (Whisper)'); }
   for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${WHISPER_BASE()}/`, { method: 'GET' }); if (r.ok || r.status === 404 || r.status === 405) return; } catch {}
+    try { const r = await fetch(`${WHISPER_BASE()}/`, { method: 'GET', signal: AbortSignal.timeout(3000) }); if (r.ok || r.status === 404 || r.status === 405) return; } catch {}
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error('whisper did not come up');
@@ -453,7 +456,7 @@ const transcribe = async (wav, onStage, { verbose = false } = {}) => {
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
   form.append('response_format', verbose ? 'verbose_json' : 'json');
   form.append('temperature', '0');
-  const res = await fetch(`${WHISPER_BASE()}${WHISPER_PATH}`, { method: 'POST', body: form });
+  const res = await fetch(`${WHISPER_BASE()}${WHISPER_PATH}`, { method: 'POST', body: form, signal: AbortSignal.timeout(STT_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`whisper ${res.status}`);
   const body = await res.json();
   const text = String(body.text || '').replace(/\s+/g, ' ').trim();
@@ -471,7 +474,9 @@ const detectLang = (t) => (hebrewShare(t) > 0.4 ? 'he' : 'en');
 // The Home Server's one TTS (tts.service, ~/dev/home-server/services/tts), called like any other caller.
 const TTS_PORT = Number(process.env.TTS_PORT || 4457);
 const TTS_BASE = `http://127.0.0.1:${TTS_PORT}`;
-const warmTts = (lang) => { fetch(`${TTS_BASE}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }) }).catch(() => {}); };
+// A render that has not finished by then is given up and the edge-tts CLI takes over.
+const TTS_TIMEOUT_MS = 20000;
+const warmTts = (lang) => { fetch(`${TTS_BASE}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }), signal: AbortSignal.timeout(TTS_TIMEOUT_MS) }).then((r) => r.arrayBuffer()).catch(() => {}); };
 setInterval(() => { if (Date.now() - lastTurnAt < IDLE.ttsWarmMs) { warmTts('en'); warmTts('he'); } }, 45000);
 setInterval(() => {
   if (busy || !lastTurnAt) return;
@@ -653,11 +658,13 @@ const speak = async (text, lang = detectLang(text)) => {
   const out = path.join(AUDIO_DIR, `${id}.mp3`);
   const voice = VOICES[lang];
   let done = false;
+  // /speak/stream: the bytes go to the file as Microsoft sends them. The phone still gets the URL only
+  // once the file is whole (its <audio> is given a finished, ranged file, never a growing one).
   try {
-    const res = await fetch(`${TTS_BASE}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }) });
-    if (res.ok) { fs.writeFileSync(out, Buffer.from(await res.arrayBuffer())); done = true; }
+    const res = await fetch(`${TTS_BASE}/speak/stream`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }), signal: AbortSignal.timeout(TTS_TIMEOUT_MS) });
+    if (res.ok && res.body) { await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(out)); done = true; }
     else log(`tts ${res.status}: ${(await res.text()).slice(0, 120)} — falling back to the cli`);
-  } catch (e) { log(`tts unreachable (${e.message}) — falling back to the cli`); }
+  } catch (e) { log(`tts unreachable or cut off (${e.message}) — falling back to the cli`); }
   if (!done) await speakViaCli(text, voice, out);
   // Relative: the phone page resolves it against its own address (…/home-control/mobile/).
   return { url: `audio/${id}.mp3`, file: out, lang };

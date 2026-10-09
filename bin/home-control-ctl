@@ -8,7 +8,8 @@ set -uo pipefail
 
 CONFIG_FILE="${HOME_CONTROL_CONFIG:-$HOME/.config/home-control/config.env}"
 UNIT="${HOME_CONTROL_UNIT:-home-control.service}"
-DASHBOARD_UNIT="${HOME_CONTROL_DASHBOARD_UNIT:-home-control-dashboard.service}"
+# The Home Server's TTS: a common service Home Control calls, reported here, never started or stopped here.
+TTS_UNIT="${HOME_CONTROL_TTS_UNIT:-tts.service}"
 
 # The service format is deliberately plain KEY=VALUE rather than shell code:
 # owner names and project paths commonly contain spaces, and a diagnostic command
@@ -21,7 +22,7 @@ load_config() {
     [[ $line =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || continue
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     case "$key" in
-      PATH|VOICE_ROOT|VOICE_LABEL|VOICE_STATE|VOICE_TOKEN|VOICE_PORT|VOICE_HOST|TTS_PORT|MONITOR_PORT|WHISPER_URL|WHISPER_MODEL|VOICE_LOCAL_PLAYER|VOICE_OWNER|VOICE_EDGE_TTS|VOICE_SPEECH_REWRITE|VOICE_LANG|VOICE_PEER_DELEGATION|VOICE_MODEL|VOICE_EFFORT|VOICE_REWRITE_MODEL|VOICE_VOICE_EN|VOICE_VOICE_HE|VOICE_PERMISSION_MODE|VOICE_ON_INPUT|VOICE_AWAY|HOME_CONTROL_TAILNET_HOST|HOME_CONTROL_TAILNET_PORT|HOME_CONTROL_TTS_PYTHON|HOME_CONTROL_APP_DIR)
+      PATH|VOICE_ROOT|VOICE_LABEL|VOICE_STATE|VOICE_TOKEN|VOICE_PORT|VOICE_HOST|TTS_PORT|WHISPER_URL|WHISPER_MODEL|VOICE_LOCAL_PLAYER|VOICE_OWNER|VOICE_EDGE_TTS|VOICE_SPEECH_REWRITE|VOICE_LANG|VOICE_PEER_DELEGATION|VOICE_MODEL|VOICE_EFFORT|VOICE_REWRITE_MODEL|VOICE_VOICE_EN|VOICE_VOICE_HE|VOICE_PERMISSION_MODE|VOICE_ON_INPUT|VOICE_AWAY|HOME_CONTROL_TAILNET_HOST|HOME_CONTROL_APP_DIR)
         printf -v "$key" '%s' "$value"; export "$key" ;;
     esac
   done < "$CONFIG_FILE"
@@ -29,21 +30,23 @@ load_config() {
 load_config
 
 VOICE_PORT="${VOICE_PORT:-4455}"
-MONITOR_PORT="${MONITOR_PORT:-4458}"
+TTS_PORT="${TTS_PORT:-4457}"
 HOME_CONTROL_TAILNET_HOST="${HOME_CONTROL_TAILNET_HOST:-}"
-HOME_CONTROL_TAILNET_PORT="${HOME_CONTROL_TAILNET_PORT:-8443}"
 
+# Home Control Mobile (the phone page): /mobile/ on the server, /home-control/mobile/ behind the Home Server gateway.
 url() {
   if [[ -n $HOME_CONTROL_TAILNET_HOST ]]; then
-    echo "https://$HOME_CONTROL_TAILNET_HOST:$HOME_CONTROL_TAILNET_PORT"
+    echo "https://$HOME_CONTROL_TAILNET_HOST/home-control/mobile/"
   else
-    echo "http://127.0.0.1:$VOICE_PORT"
+    echo "http://127.0.0.1:$VOICE_PORT/mobile/"
   fi
 }
+# Home Control (the dashboard), on this machine, through the gateway.
+dashboard_url() { echo "http://127.0.0.1:4400/home-control/"; }
 
 # `is-active` exits non-zero for anything but "active"; we want the word, not the code.
 state() { systemctl --user is-active "$UNIT" 2>/dev/null || true; }
-dashboard_state() { systemctl --user is-active "$DASHBOARD_UNIT" 2>/dev/null || true; }
+tts_state() { systemctl --user is-active "$TTS_UNIT" 2>/dev/null || true; }
 
 # Any HTTP status means the server answered. The login gate replies 302/401 to an
 # unauthenticated probe, so `curl -f` would call a perfectly healthy Home Control dead.
@@ -57,7 +60,7 @@ usage() {
   cat <<'USAGE'
 Usage: home-control-ctl <command>
 
-  status [--json]   unit state, local reachability, and the phone URL
+  status [--json]   unit state, local reachability, the phone and dashboard URLs, the TTS service
   start | stop | restart
   enable | disable  start at boot (user linger must be on)
   logs [-f]         journalctl for the unit
@@ -72,25 +75,22 @@ USAGE
 case "${1:-status}" in
 status)
   s=$(state)
-  d=$(dashboard_state)
+  t=$(tts_state)
   if [[ ${2:-} == --json ]]; then
     jq -nc --arg state "${s:-unknown}" --arg url "$(url)" \
-      --argjson reachable "$(reachable)" --arg unit "$UNIT" \
-      --arg dashboard_state "${d:-unknown}" --arg dashboard_url "http://127.0.0.1:$MONITOR_PORT" \
-      '{unit:$unit, state:$state, reachable:$reachable, url:$url,
-        dashboard_unit:"'"$DASHBOARD_UNIT"'", dashboard_state:$dashboard_state, dashboard_url:$dashboard_url}'
+      --argjson reachable "$(reachable)" --arg unit "$UNIT" --arg dashboard_url "$(dashboard_url)" \
+      --arg tts_unit "$TTS_UNIT" --arg tts_state "${t:-unknown}" --arg tts_port "$TTS_PORT" \
+      '{unit:$unit, state:$state, reachable:$reachable, url:$url, dashboard_url:$dashboard_url,
+        tts:{unit:$tts_unit, state:$tts_state, port:($tts_port|tonumber), common:true}}'
   else
-    printf 'unit       %s\nstate      %s\nreachable  %s\nurl        %s\n' \
-      "$UNIT" "${s:-unknown}" "$(reachable)" "$(url)"
-    printf 'dashboard  %s (%s)   http://127.0.0.1:%s\n' \
-      "$DASHBOARD_UNIT" "${d:-unknown}" "$MONITOR_PORT"
+    printf 'unit       %s\nstate      %s\nreachable  %s\nmobile     %s\ndashboard  %s\n' \
+      "$UNIT" "${s:-unknown}" "$(reachable)" "$(url)" "$(dashboard_url)"
+    printf 'tts        %s (%s)   127.0.0.1:%s   common Home Server service, not started by Home Control\n' \
+      "$TTS_UNIT" "${t:-unknown}" "$TTS_PORT"
   fi
   ;;
 start | stop | enable | disable)
-  # The dashboard unit is BindsTo=$UNIT, so stopping $UNIT stops it too — but
-  # systemd never starts a bound unit back up on its own, only stops it. Drive
-  # both explicitly so the dashboard doesn't end up silently down after this.
-  systemctl --user "$1" "$UNIT" "$DASHBOARD_UNIT"
+  systemctl --user "$1" "$UNIT"
   ;;
 restart)
   # Deliberately loud: this is the one destructive thing here.
@@ -99,8 +99,6 @@ restart)
     [[ $a == [yY]* ]] || { echo "aborted"; exit 1; }
   fi
   systemctl --user restart "$UNIT"
-  # BindsTo= stopped the dashboard along with $UNIT but won't start it back up.
-  systemctl --user restart "$DASHBOARD_UNIT"
   ;;
 logs) shift; journalctl --user -u "$UNIT" "$@" ;;
 url) url ;;
@@ -114,13 +112,10 @@ doctor)
   for c in node claude curl; do
     p=$(command -v "$c") && say "$c" "$p" || { say "$c" "NOT FOUND"; fail=1; }
   done
-  if [[ -n ${HOME_CONTROL_TTS_PYTHON:-} && -x ${HOME_CONTROL_TTS_PYTHON:-} ]]; then
-    say "tts python" "$HOME_CONTROL_TTS_PYTHON"
-    "$HOME_CONTROL_TTS_PYTHON" -c 'import edge_tts' 2>/dev/null \
-      && say "edge-tts" "importable" || { say "edge-tts" "NOT IMPORTABLE"; fail=1; }
-  else
-    say "tts python" "MISSING (HOME_CONTROL_TTS_PYTHON)"; fail=1
-  fi
+  t=$(tts_state)
+  curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$TTS_PORT/health" 2>/dev/null \
+    && say "tts" "$TTS_UNIT ${t:-unknown}, answering on $TTS_PORT" \
+    || say "tts" "$TTS_UNIT ${t:-unknown}, NOT answering on $TTS_PORT (speech falls back to the edge-tts CLI)"
   if [[ -n ${WHISPER_URL:-} ]]; then
     curl -fsS -o /dev/null --max-time 4 "$WHISPER_URL" 2>/dev/null \
       && say "whisper" "reachable" || say "whisper" "NOT reachable (asleep?)"
@@ -134,7 +129,6 @@ doctor)
   command -v tailscale >/dev/null && say "tailscale" "$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "unknown"')" \
     || say "tailscale" "not installed"
   s=$(state); say "unit" "${s:-unknown}"
-  d=$(dashboard_state); say "dashboard unit" "${d:-unknown}"
   exit $fail
   ;;
 -h | --help | help) usage ;;
