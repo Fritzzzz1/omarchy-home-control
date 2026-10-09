@@ -1,19 +1,13 @@
-import http from 'node:http';
+// Home Control (the dashboard): the transmission view and analytics, served by server.mjs at its root
+// (`/`, `/api/activity`, `POST /api/volume`) and reading the server's own live state.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readBody } from './request-body.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const label = process.env.VOICE_LABEL || 'voice';
 const stateDir = process.env.VOICE_STATE || path.join(os.homedir(), '.local/share/home-control/state', label);
-const port = Number(process.env.MONITOR_PORT || 4458);
-// The voice server the dashboard reads from. Upstream hardcoded :4455 here,
-// so a server on any other port was invisible to the monitor.
-const voiceOrigin = `http://${process.env.VOICE_HOST || '127.0.0.1'}:${Number(process.env.VOICE_PORT || 4455)}`;
-
-const FETCH_TIMEOUT_MS = 1500;
 const TAIL_WINDOW_BYTES = 256 * 1024; // only scan the last chunk of a log file, not the whole thing
 const ENTRY_TEXT_LIMIT = 16000;       // cap per-entry text so one huge tool call can't bloat the payload
 const SESSION_ENTRY_LIMIT = 80;
@@ -76,94 +70,47 @@ function sessionSnapshot() {
   return { id: session.id, model, entries: entries.slice(-SESSION_ENTRY_LIMIT) };
 }
 
-// The dashboard talks to the voice server's passphrase-gated /api/state route.
-// Log in once with the token from the state dir and reuse the session cookie.
-// Reading the token is fine: this server is bound to localhost.
-let cookie = null;
-async function login() {
-  try {
-    const key = fs.readFileSync(path.join(stateDir, 'voice-token'), 'utf8').trim();
-    const r = await fetch(`${voiceOrigin}/login`, {
-      method: 'POST', redirect: 'manual',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }), signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const set = r.headers.get('set-cookie');
-    await r.body?.cancel();
-    if (set) { cookie = set.split(';')[0]; return true; }
-  } catch {}
-  return false;
-}
-
-// Poll the voice server for what it's doing right now (nowPlaying + the turn's sentences);
-// the dashboard has no live push channel, so this is how it follows along. A 401 still
-// counts as "online" (server is up, just needs a fresh login for next time).
-async function fetchLiveState() {
-  try {
-    const r = await fetch(`${voiceOrigin}/api/state`, { headers: cookie ? { cookie } : {}, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    const online = r.status === 401 || r.ok;
-    if (r.ok) { try { return { online, live: await r.json() }; } catch { return { online, live: null }; } }
-    await r.body?.cancel();
-    if (r.status === 401) await login();
-    return { online, live: null };
-  } catch { return { online: false, live: null }; }
-}
-
-// The page changes the speech volume through here, since only this server holds the voice
-// server's login. A 401 gets one fresh login and a retry, so an expired cookie doesn't cost
-// the user a drag that did nothing.
-async function postVolume(body) {
-  const send = () => fetch(`${voiceOrigin}/api/volume`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) },
-    body, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  try {
-    let r = await send();
-    if (r.status === 401) { await r.body?.cancel(); if (await login()) r = await send(); }
-    if (r.status === 401) { await r.body?.cancel(); return { status: 502, body: { ok: false, error: 'login' } }; }
-    let json = {};
-    try { json = await r.json(); } catch {}
-    return { status: r.status, body: json };
-  } catch { return { status: 502, body: { ok: false, error: 'unreachable' } }; }
-}
-
 const readEvents = () => tailLines('voice.log', 100).map(line => ({ at: line.slice(0, 24), text: line.slice(25) }));
 const readTurns = () => tailLines('transcript.jsonl', 30).flatMap(line => {
   try { const t = JSON.parse(line); return [{ at: t.at, user: t.user, spoken: t.spoken, ms: t.ms }]; } catch { return []; }
 });
 
 // Assemble the full payload served at /api/activity, exactly as monitor.html expects it.
-async function snapshot() {
-  const { online, live } = await fetchLiveState();
+// live(): the server's { nowPlaying, sentences, rate, volume }; it is this process, so always online.
+function snapshot(live) {
   return {
-    online, events: readEvents(), turns: readTurns(), session: sessionSnapshot(),
+    online: true, events: readEvents(), turns: readTurns(), session: sessionSnapshot(),
     nowPlaying: live?.nowPlaying || null, sentences: live?.sentences || [], rate: live?.rate || 1, volume: live?.volume || null,
     at: new Date().toISOString(),
   };
 }
 
-http.createServer(async (req, res) => {
-  if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) { res.writeHead(403); return res.end(); }
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");
-  if (req.url === '/api/volume' && req.method === 'POST') {
-    // JSON only, from this page only: a form on another site can't send application/json
-    // without a preflight this server never answers, and a browser always sends its Origin.
-    const origin = req.headers.origin;
-    if (!(req.headers['content-type'] || '').startsWith('application/json') || (origin && origin !== `http://${req.headers.host}`)) { res.writeHead(403); return res.end(); }
-    let raw;
-    try { raw = await readBody(req, 4096); } catch { if (!res.headersSent && !res.destroyed) res.writeHead(413); return res.end(); }
-    const { status, body } = await postVolume(raw.toString('utf8'));
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify(body));
-  }
-  if (req.method !== 'GET') { res.writeHead(405); return res.end(); }
-  if (req.url === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(fs.readFileSync(path.join(here, 'monitor.html'))); }
-  if (req.url === '/api/activity') {
-    try { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(await snapshot())); }
+// The dashboard's routes. Returns false for any other path, which server.mjs then handles.
+// postVolume(body) -> { status, body }: the server's own volume setter.
+export function createDashboard({ port, live, postVolume }) {
+  return async (req, res, pathname) => {
+    const volumePost = pathname === '/api/volume' && req.method === 'POST';
+    if (pathname !== '/' && pathname !== '/api/activity' && !volumePost) return false;
+    if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) { res.writeHead(403); res.end(); return true; }
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'");
+    if (volumePost) {
+      // JSON only, from this page only: a form on another site can't send application/json
+      // without a preflight this server never answers, and a browser always sends its Origin.
+      const origin = req.headers.origin;
+      if (!(req.headers['content-type'] || '').startsWith('application/json') || (origin && origin !== `http://${req.headers.host}`)) { res.writeHead(403); res.end(); return true; }
+      let raw;
+      try { raw = await req.body({ maxBytes: 4096 }); } catch { if (!res.headersSent && !res.destroyed) res.writeHead(413); res.end(); return true; }
+      const { status, body } = postVolume(raw.toString('utf8'));
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+      return true;
+    }
+    if (req.method !== 'GET') { res.writeHead(405); res.end(); return true; }
+    if (pathname === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(fs.readFileSync(path.join(here, 'monitor.html'))); return true; }
+    try { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(snapshot(live()))); }
     catch { res.writeHead(500); res.end('{}'); }
-    return;
-  }
-  res.writeHead(404); res.end();
-}).listen(port, '127.0.0.1', () => console.log(`Voice observatory: http://127.0.0.1:${port}`));
+    return true;
+  };
+}

@@ -8,12 +8,14 @@ For Other providers/runtimes your implementing agent should know the trick.
 
 ## Stack
 
-- `server.mjs` (Node) — voice server, binds `127.0.0.1`
+- `server.mjs` (Node) — the one server, binds `127.0.0.1`: the desktop dashboard at `/`, the phone page at `/mobile/`.
+  On the Home Server its HTTP plumbing (routing, body reads, JSON errors, files, redirects, `GET /health`, SIGTERM)
+  is the shared layer `~/dev/home-server/shared/js/home-app.mjs`; elsewhere, keep that file at the same relative path
 - whisper.cpp `whisper-server` (local) or a remote endpoint — transcription
 - your coding agent (Claude Code, Codex, OpenAI API, local model)
-- `tts.py` (edge-tts) or your own TTS
+- a TTS service (here: the Home Server's `tts.service`, edge-tts, 127.0.0.1:4457), or your own
 - Tailscale — HTTPS access from the phone
-- systemd user units — voice server + dashboard
+- systemd user unit — `home-control`
 
 ## Install
 
@@ -57,7 +59,7 @@ home-control-ctl url
 home-control-ctl restart     # asks for confirmation; ends any live turn
 ```
 
-Dashboard restarts separately: `systemctl --user restart home-control-dashboard`.
+The dashboard is part of the server: it restarts with it.
 
 ## Limits
 

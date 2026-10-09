@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Voice chat with the agent in this folder: text in (dictated on the phone), `claude -p` in CONTEXT
 // with a persistent session and the voice-mode prompt, edge-tts out. Binds to localhost only;
-// Tailscale Serve puts HTTPS in front of it (see README.md next to this file).
-import http from 'node:http';
+// the Home Server's gateway puts it at /home-control/ (see README.md next to this file).
+// HTTP runs on the Home Server's shared layer (shared/js/home-app.mjs): routing, body reads, JSON
+// errors, files, redirects, GET /health, SIGTERM.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,8 +11,9 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readBody } from './request-body.mjs';
+import { createApp, json, sendFile, redirect } from '../../../shared/js/home-app.mjs';
 import { runInputHook } from './input-hook.mjs';
+import { createDashboard } from './monitor.mjs';
 import { routeTurn, garbageCheck, routerMode, routerConfig, setRouterLog, wavDurationS, tvIsOn, liveSessions, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -33,7 +35,6 @@ const OWNER = process.env.VOICE_OWNER || 'the user';
 // Names the pages carry, filled in when they are served so the tracked files stay untouched.
 const AGENT_NAME = process.env.VOICE_AGENT_NAME || 'Home Control';
 const PWA_NAME = process.env.VOICE_PWA_NAME || 'Home';
-const TTS_PYTHON = process.env.HOME_CONTROL_TTS_PYTHON || 'python3';
 const MODEL = process.env.VOICE_MODEL || '';
 const EFFORT = process.env.VOICE_EFFORT || '';
 const REWRITE_MODEL = process.env.VOICE_REWRITE_MODEL || 'claude-haiku-4-5-20251001';
@@ -100,13 +101,12 @@ const readJson = (file, fallback) => {
 };
 const writeJson = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2));
 const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-// request-body.mjs owns bounded request reads.
 const parseCookies = (req) => Object.fromEntries(
   (req.headers.cookie || '').split(';').map((c) => c.trim().split('=')).filter((p) => p[0]),
 );
 const readJsonBody = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
-const readJsonRequest = async (req) => readJsonBody((await readBody(req)).toString('utf8'));
-const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+// Any Content-Type, and a body that is not JSON is {}: the phone and the scripts send what they send.
+const readJsonRequest = async (req) => readJsonBody((await req.body()).toString('utf8'));
 const html = (res, file, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(HERE, file), 'utf8').replaceAll('__PWA_NAME__', PWA_NAME).replaceAll('__AGENT__', AGENT_NAME.toUpperCase())); };
 
 // ---------- the gate: one passphrase, a cookie once it is typed ----------
@@ -134,6 +134,8 @@ const logins = readJson(SESSIONS_FILE, {});
 const failures = { count: 0, until: 0 };
 const LOCKOUT_MS = 15 * 60 * 1000;
 const isLoggedIn = (req) => {
+  // The home gateway (the one door, Liran's devices only) vouches with X-Home-User: owner, as for Video Desk.
+  if (req.headers['x-home-user'] === 'owner') return true;
   const c = parseCookies(req).voice;
   return Boolean(c && logins[c]);
 };
@@ -390,6 +392,7 @@ const stripMarkdown = (t) => t
 // ---------- transcription: whisper.cpp's own server, spawned here, model loaded once ----------
 const WHISPER_PORT = Number(process.env.WHISPER_PORT || 4456);
 const WHISPER_URL = (process.env.WHISPER_URL || '').replace(/\/$/, '');
+const WHISPER_PATH = process.env.WHISPER_PATH || '/inference';   // the server's inference path (whisper.cpp --inference-path)
 const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(os.homedir(), '.local', 'share', 'home-control', 'models', 'ggml-large-v3-turbo.bin');
 let whisper = null;
 const WHISPER_BASE = () => WHISPER_URL || `http://${HOST}:${WHISPER_PORT}`;
@@ -407,8 +410,7 @@ const startWhisper = () => {
   const warm = async (tries) => { try { await transcribe(silence); log('whisper warm'); } catch { if (tries > 0) setTimeout(() => warm(tries - 1), 2000); } };
   setTimeout(() => warm(10), 3000);
 };
-process.on('exit', () => whisper?.kill());
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { whisper?.kill(); process.exit(0); });
+process.on('exit', () => whisper?.kill());   // SIGTERM/SIGINT: the shared layer drains, then exits
 
 // Phrases whisper produces for silence and breath; an utterance that is only one of these is dropped.
 // Whisper's known silence artifacts; a real short answer ("yes", "okay", "תודה") is never dropped.
@@ -451,7 +453,7 @@ const transcribe = async (wav, onStage, { verbose = false } = {}) => {
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
   form.append('response_format', verbose ? 'verbose_json' : 'json');
   form.append('temperature', '0');
-  const res = await fetch(`${WHISPER_BASE()}/inference`, { method: 'POST', body: form });
+  const res = await fetch(`${WHISPER_BASE()}${WHISPER_PATH}`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`whisper ${res.status}`);
   const body = await res.json();
   const text = String(body.text || '').replace(/\s+/g, ' ').trim();
@@ -466,15 +468,10 @@ const hebrewShare = (t) => {
   return (letters.match(/[\u0590-\u05FF]/g) || []).length / letters.length;
 };
 const detectLang = (t) => (hebrewShare(t) > 0.4 ? 'he' : 'en');
+// The Home Server's one TTS (tts.service, ~/dev/home-server/services/tts), called like any other caller.
 const TTS_PORT = Number(process.env.TTS_PORT || 4457);
-let ttsWorker = null;
-const startTts = () => {
-  ttsWorker = spawn(TTS_PYTHON, [path.join(HERE, 'tts.py')], { env: { ...process.env, TTS_PORT: String(TTS_PORT) }, stdio: ['ignore', 'ignore', 'pipe'] });
-  ttsWorker.stderr.on('data', (d) => log(`tts: ${String(d).trim().slice(0, 200)}`));
-  ttsWorker.on('exit', (code) => { log(`tts worker exited ${code}`); ttsWorker = null; });
-};
-process.on('exit', () => ttsWorker?.kill());
-const warmTts = (lang) => { if (!ttsWorker) return; fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }) }).catch(() => {}); };
+const TTS_BASE = `http://127.0.0.1:${TTS_PORT}`;
+const warmTts = (lang) => { fetch(`${TTS_BASE}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: lang === 'he' ? 'כן' : 'Yes', voice: VOICES[lang] }) }).catch(() => {}); };
 setInterval(() => { if (Date.now() - lastTurnAt < IDLE.ttsWarmMs) { warmTts('en'); warmTts('he'); } }, 45000);
 setInterval(() => {
   if (busy || !lastTurnAt) return;
@@ -656,15 +653,14 @@ const speak = async (text, lang = detectLang(text)) => {
   const out = path.join(AUDIO_DIR, `${id}.mp3`);
   const voice = VOICES[lang];
   let done = false;
-  if (ttsWorker) {
-    try {
-      const res = await fetch(`http://${HOST}:${TTS_PORT}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }) });
-      if (res.ok) { fs.writeFileSync(out, Buffer.from(await res.arrayBuffer())); done = true; }
-      else log(`tts worker ${res.status}: ${(await res.text()).slice(0, 120)} — falling back to the cli`);
-    } catch (e) { log(`tts worker unreachable (${e.message}) — falling back to the cli`); }
-  }
+  try {
+    const res = await fetch(`${TTS_BASE}/speak`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice }) });
+    if (res.ok) { fs.writeFileSync(out, Buffer.from(await res.arrayBuffer())); done = true; }
+    else log(`tts ${res.status}: ${(await res.text()).slice(0, 120)} — falling back to the cli`);
+  } catch (e) { log(`tts unreachable (${e.message}) — falling back to the cli`); }
   if (!done) await speakViaCli(text, voice, out);
-  return { url: `/audio/${id}.mp3`, file: out, lang };
+  // Relative: the phone page resolves it against its own address (…/home-control/mobile/).
+  return { url: `audio/${id}.mp3`, file: out, lang };
 };
 // One sentence's audio: tell the phone, and start it playing locally too.
 const emitAudio = (send, audio, index, text) => { send({ type: 'audio', url: audio.url, index, text }); playLocally(audio.file, index, text); };
@@ -757,7 +753,7 @@ const handleTurn = async (req, res) => {
   try {
     let text, lang, inputAudio, duration = null, evidence = null;
     if ((req.headers['content-type'] || '').startsWith('audio/')) {
-      const wav = await readBody(req, 20e6);
+      const wav = await req.body({ maxBytes: 20e6 });
       inputAudio = wav;
       send({ type: 'status', text: 'transcribing' });
       // The duration gate, decided from the header before a byte is sent: a short recording is
@@ -913,100 +909,117 @@ const handleTurn = async (req, res) => {
 // Icons and the manifest are public: iOS asks for them when the app is added to the
 // home screen, and the login page needs them too. Fixed allowlist — no path building.
 const PUBLIC_FILES = {
-  '/manifest.json': 'application/manifest+json',
-  '/apple-touch-icon.png': 'image/png',
-  '/icon-192.png': 'image/png',
-  '/icon-512.png': 'image/png',
-  '/favicon-32.png': 'image/png',
-  '/favicon.ico': 'image/png',
+  '/manifest.json': ['manifest.json', 'application/manifest+json'],
+  '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'],
+  '/icon-192.png': ['icon-192.png', 'image/png'],
+  '/icon-512.png': ['icon-512.png', 'image/png'],
+  '/favicon-32.png': ['favicon-32.png', 'image/png'],
+  '/favicon.ico': ['favicon-32.png', 'image/png'],
 };
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${HOST}:${PORT}`);
-  try {
-    if (url.pathname === '/login' && req.method === 'POST') {
-      const body = (await readBody(req)).toString('utf8');
-      const key = req.headers['content-type']?.includes('json') ? readJsonBody(body).key : new URLSearchParams(body).get('key');
-      if (tryLogin(key, res, req)) { res.writeHead(303, { Location: '/' }); return res.end(); }
-      return html(res, 'login.html', 401);
-    }
-    if (url.pathname === '/logout') { res.setHeader('Set-Cookie', 'voice=; Path=/; Max-Age=0'); res.writeHead(303, { Location: '/' }); return res.end(); }
-    if (url.searchParams.get('key') && !isLoggedIn(req)) {
-      if (tryLogin(url.searchParams.get('key'), res, req)) { res.writeHead(303, { Location: '/' }); return res.end(); }
-    }
-    if (PUBLIC_FILES[url.pathname]) {
-      const file = path.join(HERE, url.pathname === '/favicon.ico' ? 'favicon-32.png' : url.pathname.slice(1));
-      if (!fs.existsSync(file)) { res.writeHead(404); return res.end(); }
-      res.writeHead(200, { 'Content-Type': PUBLIC_FILES[url.pathname], 'Cache-Control': 'public, max-age=86400' });
-      return fs.createReadStream(file).pipe(res);
-    }
-    if (!isLoggedIn(req)) {
-      if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/audio/')) return json(res, 401, { error: 'login' });
-      return html(res, 'login.html', 401);
-    }
-    if (url.pathname === '/') return html(res, 'index.html');
-    if (url.pathname === '/api/turn' && req.method === 'POST') return handleTurn(req, res);
-    if (url.pathname === '/api/skip' && req.method === 'POST') { if (url.searchParams.get('hush') === '1') { if (busy) hushed = true; speechGen++; } skipLocal(); return json(res, 200, { ok: true }); }
-    if (url.pathname === '/api/client-log' && req.method === 'POST') { const b = await readJsonRequest(req); log('phone: ' + String(b?.msg ?? '').slice(0, 400)); return json(res, 200, { ok: true }); }
-    if (url.pathname === '/api/rate' && req.method === 'POST') {
-      const body = await readJsonRequest(req);
-      const ok = setSpeechRate(body.rate);
-      return json(res, ok ? 200 : 400, { ok, rate: speechRate });
-    }
-    if (url.pathname === '/api/volume' && req.method === 'GET') return json(res, 200, volume);
-    if (url.pathname === '/api/volume' && req.method === 'POST') {
-      const ok = setVolume(await readJsonRequest(req));
-      return json(res, ok ? 200 : 400, { ok, ...volume });
-    }
-    if (url.pathname === '/api/reset' && req.method === 'POST') {
-      const old = claudeSession();
-      // Clear the session first: stopClaude starts the next process, and it must not resume this one.
-      saveClaudeSession({ id: null, turns: 0, previous: old.id });
-      stopClaude();
-      // New conversation means new conversation: the drawer's file is cleared, and so is the
-      // event log — otherwise old content stays reachable via /api/events (a catching-up phone
-      // would render it into the fresh conversation) even after the reset button was pressed.
-      try { fs.rmSync(TRANSCRIPT, { force: true }); } catch {}
-      eventLog = [];
-      // The router's memory of the last exchanges goes with it: a new conversation is cold for Jev
-      // exactly as it is for Claude, or a bare "yes" would be judged against a conversation that no
-      // longer exists.
-      recentTurns.length = 0;
-      log(`session reset (was ${old.id}, ${old.turns} turns)`);
-      return json(res, 200, { ok: true });
-    }
-    // away here also covers LOCAL_PLAYER === 'off': with no machine speakers, the phone is the
-    // only player, so it must start unmuted exactly like real away mode does.
-    if (url.pathname === '/api/state') { const s = claudeSession(); return json(res, 200, { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, volume, away: LOCAL_PLAYER === 'off' || isAway() }); }
-    if (url.pathname === '/api/session-stats') return json(res, 200, sessionStats());
-    if (url.pathname === '/api/transcript') {
-      const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
-      return json(res, 200, lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));
-    }
-    // The reliability backbone: a phone polls this while foregrounded and catches up on
-    // anything it missed — most importantly a relay reply that landed after its own turn's
-    // SSE connection had already closed. `after` is the highest event id already seen; with
-    // none given (first load), the recent tail of the log is returned instead of nothing.
-    if (url.pathname === '/api/events' && req.method === 'GET') {
-      const after = Number(url.searchParams.get('after'));
-      const list = Number.isFinite(after) && after > 0 ? eventLog.filter((e) => e.id > after) : eventLog.slice(-50);
-      // No cursor in the response: the client tracks the highest id it has actually applied,
-      // which is the only value that is safe for it to poll from next.
-      return json(res, 200, { events: list, bootId: BOOT_ID });
-    }
-    if (url.pathname.startsWith('/audio/')) {
-      const file = path.join(AUDIO_DIR, path.basename(url.pathname));
-      if (!fs.existsSync(file)) return json(res, 404, { error: 'gone' });
-      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': fs.statSync(file).size, 'Cache-Control': 'private, max-age=3600' });
-      return fs.createReadStream(file).pipe(res);
-    }
-    json(res, 404, { error: 'not found' });
-  } catch (e) {
-    log(`http error ${req.method} ${url.pathname}: ${e.message}`);
-    if (!res.headersSent) json(res, 500, { error: e.message });
-    else res.end();
-  }
+// Home Control (the dashboard, monitor.mjs) at the root; it reads this process's live state.
+const dashboard = createDashboard({
+  port: PORT,
+  live: () => ({ nowPlaying, sentences: turnSentences, rate: speechRate, volume }),
+  postVolume: (raw) => { const ok = setVolume(readJsonBody(raw)); return { status: ok ? 200 : 400, body: { ok, ...volume } }; },
 });
+
+const app = createApp({ id: 'home-control', port: PORT, bind: HOST });
+
+// Home Control Mobile (index.html, the phone page) lives under /mobile/. Its relative URLs (api/, audio/,
+// login, icons, manifest) reach the same routes as at the root: every route below is registered at
+// both. The root's own three are the dashboard's (/, /api/activity, POST /api/volume).
+const page = (req) => (req.pathname.startsWith('/mobile/') ? req.pathname.slice('/mobile'.length) : req.pathname);
+const both = (method, p, handler) => { app.route(method, p, handler); app.route(method, '/mobile' + p, handler); };
+const keyLogin = (req, res) => {
+  const key = req.query.get('key');
+  if (!key || isLoggedIn(req) || !tryLogin(key, res, req)) return false;
+  redirect(res, 303, './');
+  return true;
+};
+// open: no login needed, but ?key= still logs in. gated: the login page (or 401 for api/ and audio/) until logged in.
+const open = (fn) => async (req, res) => (keyLogin(req, res) ? undefined : fn(req, res));
+const gated = (fn) => open(async (req, res) => {
+  if (isLoggedIn(req)) return fn(req, res);
+  const p = page(req);
+  if (p.startsWith('/api/') || p.startsWith('/audio/')) return json(res, 401, { error: 'login' });
+  return html(res, 'login.html', 401);
+});
+const ok = () => ({ ok: true });
+
+app.route('GET', '/mobile', async (req, res) => redirect(res, 308, 'mobile/' + (req.query.size ? '?' + req.query : '')));
+for (const p of ['/', '/api/activity']) app.get(p, (req, res) => dashboard(req, res, p));
+app.post('/api/volume', (req, res) => dashboard(req, res, '/api/volume'));
+
+both('POST', '/login', async (req, res) => {
+  const body = (await req.body()).toString('utf8');
+  const key = req.headers['content-type']?.includes('json') ? readJsonBody(body).key : new URLSearchParams(body).get('key');
+  if (tryLogin(key, res, req)) return redirect(res, 303, './');
+  return html(res, 'login.html', 401);
+});
+const logout = async (req, res) => { res.setHeader('Set-Cookie', 'voice=; Path=/; Max-Age=0'); redirect(res, 303, './'); };
+both('GET', '/logout', logout);
+both('POST', '/logout', logout);
+for (const [p, [file, type]] of Object.entries(PUBLIC_FILES)) both('GET', p, open((req, res) => sendFile(req, res, path.join(HERE, file), { type })));
+
+app.get('/mobile/', gated(async (req, res) => html(res, 'index.html')));
+both('POST', '/api/turn', gated(handleTurn));
+both('POST', '/api/skip', gated(async (req) => { if (req.query.get('hush') === '1') { if (busy) hushed = true; speechGen++; } skipLocal(); return ok(); }));
+both('POST', '/api/client-log', gated(async (req) => { const b = await readJsonRequest(req); log('phone: ' + String(b?.msg ?? '').slice(0, 400)); return ok(); }));
+both('POST', '/api/rate', gated(async (req, res) => {
+  const body = await readJsonRequest(req);
+  const ok = setSpeechRate(body.rate);
+  return json(res, ok ? 200 : 400, { ok, rate: speechRate });
+}));
+both('GET', '/api/volume', gated(async () => volume));
+app.post('/mobile/api/volume', gated(async (req, res) => {
+  const ok = setVolume(await readJsonRequest(req));
+  return json(res, ok ? 200 : 400, { ok, ...volume });
+}));
+both('POST', '/api/reset', gated(async () => {
+  const old = claudeSession();
+  // Clear the session first: stopClaude starts the next process, and it must not resume this one.
+  saveClaudeSession({ id: null, turns: 0, previous: old.id });
+  stopClaude();
+  // New conversation means new conversation: the drawer's file is cleared, and so is the
+  // event log — otherwise old content stays reachable via /api/events (a catching-up phone
+  // would render it into the fresh conversation) even after the reset button was pressed.
+  try { fs.rmSync(TRANSCRIPT, { force: true }); } catch {}
+  eventLog = [];
+  // The router's memory of the last exchanges goes with it: a new conversation is cold for Jev
+  // exactly as it is for Claude, or a bare "yes" would be judged against a conversation that no
+  // longer exists.
+  recentTurns.length = 0;
+  log(`session reset (was ${old.id}, ${old.turns} turns)`);
+  return ok();
+}));
+// away here also covers LOCAL_PLAYER === 'off': with no machine speakers, the phone is the
+// only player, so it must start unmuted exactly like real away mode does.
+both('GET', '/api/state', gated(async () => { const s = claudeSession(); return { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, volume, away: LOCAL_PLAYER === 'off' || isAway() }; }));
+both('GET', '/api/session-stats', gated(async () => sessionStats()));
+both('GET', '/api/transcript', gated(async () => {
+  const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];
+  return lines.map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+}));
+// The reliability backbone: a phone polls this while foregrounded and catches up on
+// anything it missed — most importantly a relay reply that landed after its own turn's
+// SSE connection had already closed. `after` is the highest event id already seen; with
+// none given (first load), the recent tail of the log is returned instead of nothing.
+both('GET', '/api/events', gated(async (req) => {
+  const after = Number(req.query.get('after'));
+  const list = Number.isFinite(after) && after > 0 ? eventLog.filter((e) => e.id > after) : eventLog.slice(-50);
+  // No cursor in the response: the client tracks the highest id it has actually applied,
+  // which is the only value that is safe for it to poll from next.
+  return { events: list, bootId: BOOT_ID };
+}));
+// A clip's name is its content's hash, so it may be kept for an hour.
+both('GET', '/audio/*', gated(async (req, res) => {
+  const file = path.join(AUDIO_DIR, path.basename(req.rest));
+  if (!fs.existsSync(file)) return json(res, 404, { error: 'gone' });
+  return sendFile(req, res, file, { type: 'audio/mpeg', cache: 'private, max-age=3600' });
+}));
+// Anything else: still behind the gate (the login page, not a 404, until logged in).
+for (const m of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']) app.route(m, '/*', gated(async (req, res) => json(res, 404, { error: 'not found' })));
 
 // Which session asked for a relay reply. The session file records each message from another session,
 // with its sender's name, before the reply to it, and turns run one at a time, so the last such
@@ -1054,10 +1067,9 @@ const sessionStats = () => {
   return stats;
 };
 
-server.listen(PORT, HOST, () => {
+app.listen().then(() => {
   passphrase();
   startWhisper();
-  startTts();
   ensureClaude();
   const rewriteRaw = String(process.env.VOICE_SPEECH_REWRITE || '').trim();
   if (rewriteRaw && !/^(on|off|true|false|0|1)$/i.test(rewriteRaw)) {
@@ -1070,4 +1082,4 @@ server.listen(PORT, HOST, () => {
   // one (measured: 290 ms pinged vs 800 ms cold), so while a conversation is live the connection
   // is pinged every 3 s, the same idea as the TTS warm-up above. Quiet once the turns stop.
   setInterval(() => { if (lastTurnAt && Date.now() - lastTurnAt < IDLE.ttsWarmMs) warmRouter().catch(() => {}); }, 3000);
-});
+}, (e) => { log(`cannot listen on ${HOST}:${PORT}: ${e.message}`); process.exit(1); });
