@@ -180,8 +180,8 @@ the `bin/router-dash` header.
 routing anything — the way to see how it would have behaved before trusting it. `on` routes per
 the rule above. `off` makes no call at all.
 
-**Working folder:** none required. The TV procedures talk to tv-remote's local JSON API
-(`127.0.0.1:4470`); without that service they fall back to a fixed "couldn't reach the TV" line.
+**Working folder:** none required. The TV procedures call the TV code in `~/dev/home-server/devices/tv/lib`
+directly (`TV_LIB` overrides the path); when that call fails they fall back to a fixed "couldn't reach the TV" line.
 
 **Verify:** `JEV_ROUTER=shadow`, restart, speak a few turns, then `bin/router-report` for the
 per-turn table and `bin/router-report turn last` for one turn's full timeline.

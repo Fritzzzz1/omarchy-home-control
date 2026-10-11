@@ -73,7 +73,7 @@ rule above. `off`: no Jev call at all.
 2. `handleTurn`: after `text` and `lang` exist and the input hook fired, call the router. In
    shadow, append to `router.jsonl` and continue. In `on`, dispatch on the label.
 3. `app/router-lines.json` and the six procedures, each a small function that reuses what the
-   server already has (`AWAY_FILE`, tv-remote's `POST 127.0.0.1:4470/api/run/<capability>`).
+   server already has (`AWAY_FILE`, a direct call into `devices/tv/lib` (was tv-remote's `POST 127.0.0.1:4470/api/run/<capability>`)).
 4. Phone page: a routed turn shows a small "routed: tv" tag on its row. Nothing else changes.
 5. Tests in `app/tests`: the router with a fake Jev (label/confidence table → expected path),
    and a fallback test for timeout and missing key.

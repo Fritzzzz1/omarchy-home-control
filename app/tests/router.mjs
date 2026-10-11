@@ -1,6 +1,6 @@
 // The Jev router against a fake Jev: a label/confidence table to the path each one takes, plus
 // the two ways Jev can be absent (timeout, no key) — both of which must end at Claude.
-// No network, no tv-remote: every fetch in here is ours.
+// No network, no TV: every fetch and every TV call in here is ours.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +10,7 @@ import { routeTurn, garbageCheck, classify, checkGarbage, line, procedures, rese
 const input = { text: 'mute the TV', lang: 'en', away: false, tvOn: true };
 
 // A fetch that answers as Jev does, and records the TV calls it is asked to make.
-const fakeJev = (answers, { tvCalls = [], jevDelay = 0, tvFails = false } = {}) => async (url, opts) => {
+const fakeJev = (answers, { jevDelay = 0 } = {}) => async (url, opts) => {
   if (String(url).includes('typesafe')) {
     assert.equal(opts.headers['authorization'], 'Bearer test-key');
     const body = JSON.parse(opts.body);
@@ -25,16 +25,19 @@ const fakeJev = (answers, { tvCalls = [], jevDelay = 0, tvFails = false } = {}) 
     if (jevDelay) await new Promise((r, reject) => { const t = setTimeout(r, jevDelay); opts.signal?.addEventListener('abort', () => { clearTimeout(t); const e = new Error('aborted'); e.name = 'AbortError'; reject(e); }); });
     return { ok: true, headers: { get: () => 'req-1' }, json: async () => ({ model: 'jev-latest', answers, usage: { input_tokens: 42, output_tokens: 0 } }) };
   }
-  // tv-remote
-  tvCalls.push([String(url).split('/api/run/')[1], JSON.parse(opts.body).args]);
-  if (tvFails) return { ok: false, status: 500, json: async () => ({ error: 'tv unreachable' }) };
-  return { ok: true, json: async () => ({ ok: true }) };
+  throw new Error(`unexpected fetch ${url}`);
+};
+// The TV code, called directly: records the calls it is asked to make.
+const fakeTv = ({ tvCalls = [], tvFails = false } = {}) => async (name, args) => {
+  tvCalls.push([name, args]);
+  if (tvFails) throw new Error('tv unreachable');
+  return { ok: true };
 };
 const choice = (c, confidence, extra = {}) => ({ intent: { type: 'choice', choice: c, confidence, probabilities: { [c]: confidence } }, ...extra });
 const run = (answers, opts = {}, ctx = {}) => {
   resetTvCache();
   const tvCalls = [];
-  return routeTurn(input, { mode: 'on', apiKey: 'test-key', fetchImpl: fakeJev(answers, { ...opts, tvCalls }), setAway: () => {}, settleMs: 0, ...ctx })
+  return routeTurn(input, { mode: 'on', apiKey: 'test-key', fetchImpl: fakeJev(answers, opts), tvImpl: fakeTv({ ...opts, tvCalls }), setAway: () => {}, settleMs: 0, ...ctx })
     .then((r) => ({ ...r, tvCalls }));
 };
 

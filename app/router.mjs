@@ -6,12 +6,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENDPOINT = process.env.JEV_ENDPOINT || 'https://api.typesafe.ai/v1/systemone';
 export const SPEAKERS_DRAIN_CAP_MS = 3000;
-const TV_API = process.env.TV_SERVICE_URL || 'http://127.0.0.1:4470';
+// The TV code (a system function of home-server, no service): called in this process.
+const TV_LIB = process.env.TV_LIB || path.join(HERE, '..', '..', '..', 'devices', 'tv', 'lib');
 
 export const LINES = JSON.parse(fs.readFileSync(path.join(HERE, 'router-lines.json'), 'utf8'));
 
@@ -303,19 +304,21 @@ export const buildGarbageState = ({ text, lang, duration, words = [], avgLogprob
   recent.length ? `Recent exchanges:\n${recentLines(recent)}` : '',
 ].filter(Boolean).join('\n');
 
-// ---------- tv-remote ----------
-// The same JSON API the `tv` CLI and the key bindings use: POST /api/run/<capability> {args}.
-// Capability names are tv-remote's own (lib/capabilities.mjs), not ours.
-export async function tvRun(name, args = {}, { fetchImpl = globalThis.fetch, timeoutMs = 45000 } = {}) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+// ---------- the TV ----------
+// A direct call into the TV code (devices/tv/lib/capabilities.mjs): one connection per call, closed after.
+// Capability names are the TV code's own, not ours. `tvImpl(name, args)` replaces it (tests).
+const tvDirect = async (name, args) => {
+  const [{ Tv }, { runCapability }] = await Promise.all([import(pathToFileURL(path.join(TV_LIB, 'tv.mjs'))), import(pathToFileURL(path.join(TV_LIB, 'capabilities.mjs')))]);
+  const tv = new Tv();
+  try { return await runCapability(tv, name, args); } finally { tv.close(); }
+};
+export async function tvRun(name, args = {}, { tvImpl = tvDirect, timeoutMs = 45000 } = {}) {
+  let timer;
   try {
-    const res = await fetchImpl(`${TV_API}/api/run/${name}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ args }), signal: ac.signal,
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || body?.error) throw new Error(body?.error || `tv ${res.status}`);
-    return body;
+    return await Promise.race([
+      tvImpl(name, args),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`tv ${name} timed out`)), timeoutMs); }),
+    ]);
   } finally {
     clearTimeout(timer);
   }
@@ -325,10 +328,10 @@ export async function tvRun(name, args = {}, { fetchImpl = globalThis.fetch, tim
 // tv-remote service) takes seconds to answer, and this value only colours the question Jev is
 // asked. So the caller gets what is known now and the refresh lands for the next turn.
 let tvCache = { at: 0, on: null, refreshing: false };
-export function tvIsOn({ fetchImpl = globalThis.fetch, now = Date.now(), ttlMs = 30000 } = {}) {
+export function tvIsOn({ tvImpl, now = Date.now(), ttlMs = 30000 } = {}) {
   if (now - tvCache.at >= ttlMs && !tvCache.refreshing) {
     tvCache.refreshing = true;
-    tvRun('status', {}, { fetchImpl, timeoutMs: 2000 })
+    tvRun('status', {}, { tvImpl, timeoutMs: 2000 })
       .then((s) => { tvCache = { at: Date.now(), on: Boolean(s.power ?? true), refreshing: false }; })
       .catch(() => { tvCache = { at: Date.now(), on: null, refreshing: false }; });
   }
@@ -341,7 +344,7 @@ export const resetTvCache = () => { tvCache = { at: 0, on: null }; };
 //   { say, after? } speak this fixed line (then run `after`), log the turn, no Claude at all
 //   { claudeText }  run Claude, but on a fixed instruction instead of the user's words
 //   null            not ours after all: the turn goes to Claude untouched
-// `ctx` gives them the few things the server owns: setAway (writes AWAY_FILE), log, fetchImpl.
+// `ctx` gives them the few things the server owns: setAway (writes AWAY_FILE), log, fetchImpl, tvImpl.
 const TV_CALL = {
   mute: () => ['mute', { muted: true }],
   unmute: () => ['mute', { muted: false }],
@@ -365,7 +368,7 @@ export const procedures = {
       waitForSpeakers: true,
       after: async () => {
         ctx.setAway(true);
-        try { await tvRun('power_off', {}, { fetchImpl: ctx.fetchImpl }); } catch (e) { ctx.log?.(`router: tv power_off failed: ${e.message}`); }
+        try { await tvRun('power_off', {}, { tvImpl: ctx.tvImpl }); } catch (e) { ctx.log?.(`router: tv power_off failed: ${e.message}`); }
       },
     };
   },
@@ -373,7 +376,7 @@ export const procedures = {
   async away_off(decision, ctx) {
     ctx.setAway(false);
     try {
-      await tvRun('hdmi1', {}, { fetchImpl: ctx.fetchImpl });
+      await tvRun('hdmi1', {}, { tvImpl: ctx.tvImpl });
       // hdmi1 returns once the input is up; the HDMI audio path needs a moment more before the
       // spoken line is audible here, so give it TV_SETTLE_MS before speaking.
       await new Promise((r) => setTimeout(r, ctx.settleMs ?? routerConfig().tv_settle_ms));
@@ -385,7 +388,7 @@ export const procedures = {
     if (!make) return null;   // `other`, or a label we don't run: Claude takes it
     const [name, args] = make(decision);
     try {
-      await tvRun(name, args, { fetchImpl: ctx.fetchImpl });
+      await tvRun(name, args, { tvImpl: ctx.tvImpl });
     } catch (e) {
       ctx.log?.(`router: tv ${name} failed: ${e.message}`);
       return { say: line('tv.failed', ctx.lang) };
