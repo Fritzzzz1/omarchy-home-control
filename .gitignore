@@ -5,3 +5,6 @@ app/voice-mode.md
 app/manifest.json
 CLAUDE.local.md
 architecture.local.html
+
+# This machine's rendered unit (from systemd/home-control.service.in); ~/.config/systemd/user links here
+home-control.service
