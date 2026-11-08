@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp, json, sendFile, redirect } from '../../../shared/js/home-app.mjs';
 import { runInputHook } from './input-hook.mjs';
 import { createDashboard } from './monitor.mjs';
-import { routeTurn, garbageCheck, routerMode, routerConfig, setRouterLog, wavDurationS, tvIsOn, liveSessions, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS } from './router.mjs';
+import { routeTurn, garbageCheck, routerMode, routerConfig, setRouterLog, wavDurationS, tvIsOn, liveSessions, logRouterTurn, warm as warmRouter, SPEAKERS_DRAIN_CAP_MS, procedures, tvRun } from './router.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.VOICE_ROOT || os.homedir();
@@ -1003,6 +1003,30 @@ both('POST', '/api/reset', gated(async () => {
 // away here also covers LOCAL_PLAYER === 'off': with no machine speakers, the phone is the
 // only player, so it must start unmuted exactly like real away mode does.
 both('GET', '/api/state', gated(async () => { const s = claudeSession(); return { busy, session: s.id, turns: s.turns, at: s.at, voiceInput: !!WHISPER_URL || fs.existsSync(WHISPER_MODEL), nowPlaying, sentences: turnSentences, rate: speechRate, volume, away: LOCAL_PLAYER === 'off' || isAway() }; }));
+// Settings buttons on home-control-mobile. Away runs the router's own away_on/away_off procedures
+// (same line, same order, same TV call) without a turn: the line plays on this machine's speakers only.
+// HDMI 1 is the router's `hdmi1` TV call.
+let awayRunning = false;
+both('GET', '/api/away', gated(async () => ({ away: isAway() })));
+both('POST', '/api/away', gated(async (req, res) => {
+  const body = await readJsonRequest(req);
+  if (typeof body?.away !== 'boolean') return json(res, 400, { ok: false, error: 'away must be true or false' });
+  if (awayRunning) return json(res, 409, { ok: false, error: 'away change already running', away: isAway() });
+  awayRunning = true;
+  try {
+    const lang = 'en';
+    const action = await procedures[body.away ? 'away_on' : 'away_off']({}, { setAway, log, lang });
+    if (action?.say) { const audio = await speak(action.say, lang); if (audio) playLocally(audio.file, null, action.say); }
+    if (action?.waitForSpeakers) await Promise.race([localQueue.catch(() => {}), new Promise((r) => setTimeout(r, SPEAKERS_DRAIN_CAP_MS))]);
+    if (action?.after) await action.after();
+    log(`away ${body.away ? 'on' : 'off'} from the mobile settings`);
+    return { ok: true, away: isAway() };
+  } finally { awayRunning = false; }
+}));
+both('POST', '/api/tv/hdmi1', gated(async (req, res) => {
+  try { await tvRun('hdmi1', {}); log('tv hdmi1 from the mobile settings'); return ok(); }
+  catch (e) { log(`tv hdmi1 from the mobile settings failed: ${e.message}`); return json(res, 502, { ok: false, error: e.message }); }
+}));
 both('GET', '/api/session-stats', gated(async () => sessionStats()));
 both('GET', '/api/transcript', gated(async () => {
   const lines = fs.existsSync(TRANSCRIPT) ? fs.readFileSync(TRANSCRIPT, 'utf8').trim().split('\n').filter(Boolean).slice(-40) : [];

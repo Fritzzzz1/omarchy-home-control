@@ -73,6 +73,10 @@ body>header button{padding:7px 11px;min-height:36px}
 .seg button{flex:1;padding:9px 10px;border-radius:9px;border:0;background:transparent;color:var(--dim);font-size:13px}
 .seg button[aria-pressed="true"]{background:var(--green);color:#203123}
 .seg-speed button{padding:9px 3px;font-size:12px}
+/* Away (Home/Away) and the TV's HDMI 1 button */
+#hdmiBtn{width:100%;padding:9px 12px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--ink);font-size:13px}
+#hdmiBtn:active{background:#ffffff14}
+.setting-note{font-size:11px;color:var(--dim);min-height:14px}
 /* Reset (!): amber, so it reads as the one button that stops everything. */
 #helpBtn{display:flex;align-items:center;gap:12px;width:100%;padding:9px 12px;border-radius:12px;border:1px solid #e5c28e40;background:#e5c28e14;color:var(--amber);font-size:13px;text-align:left}
 #helpBtn:active{background:#e5c28e26}#helpBtn:disabled{opacity:.6}
@@ -170,6 +174,19 @@ body>header #autoToggle[aria-pressed="true"]{background:var(--green);border-colo
         <button type="button" class="seg-rate" data-rate="1.5" role="radio" aria-checked="false" aria-pressed="false">1.5×</button>
         <button type="button" class="seg-rate" data-rate="1.75" role="radio" aria-checked="false" aria-pressed="false">1.75×</button>
       </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">Away mode</div>
+      <div class="seg" role="radiogroup" aria-label="Away mode">
+        <button type="button" class="seg-away" data-away="false" role="radio" aria-checked="false" aria-pressed="false">Home</button>
+        <button type="button" class="seg-away" data-away="true" role="radio" aria-checked="false" aria-pressed="false">Away</button>
+      </div>
+      <div class="setting-note" id="awayNote"></div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-label">TV</div>
+      <button type="button" id="hdmiBtn">HDMI 1</button>
+      <div class="setting-note" id="hdmiNote"></div>
     </div>
     <div class="setting-row">
       <div class="setting-label">Out of sync?</div>
@@ -739,7 +756,30 @@ rateSeg.apply();
 rateSeg.buttons.forEach((b) => { b.onclick = () => setSpeechRate(b.dataset.rate); });
 textFlowSeg.apply();
 textFlowSeg.buttons.forEach((b) => { b.onclick = () => setTextFlow(b.dataset.text); });
-const openSettings = () => $('settingsPanel').classList.add('open');
+// Away mode: the server's flag, read each time settings open; a tap runs the router's away procedure there.
+let awayState = null;
+const awaySeg = segButtons('.seg-away', 'away', (v) => awayState !== null && (v === 'true') === awayState);
+const loadAway = () => fetch('api/away').then((r) => r.json()).then((s) => { awayState = !!s.away; awaySeg.apply(); $('awayNote').textContent = ''; }).catch(() => { $('awayNote').textContent = 'Could not read away mode'; });
+awaySeg.buttons.forEach((b) => { b.onclick = async () => {
+  const want = b.dataset.away === 'true';
+  if (want === awayState) return;
+  awaySeg.buttons.forEach((x) => { x.disabled = true; });
+  $('awayNote').textContent = want ? 'Turning away mode on…' : 'Turning away mode off…';
+  try {
+    const r = await fetch('api/away', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ away: want }) });
+    const s = await r.json();
+    if (typeof s.away === 'boolean') { awayState = s.away; awaySeg.apply(); }
+    $('awayNote').textContent = r.ok ? '' : (s.error || 'Failed');
+  } catch { $('awayNote').textContent = 'Failed'; }
+  finally { awaySeg.buttons.forEach((x) => { x.disabled = false; }); }
+}; });
+$('hdmiBtn').onclick = async () => {
+  const btn = $('hdmiBtn'); btn.disabled = true; $('hdmiNote').textContent = 'Switching the TV to HDMI 1…';
+  try { const r = await fetch('api/tv/hdmi1', { method: 'POST' }); const s = await r.json(); $('hdmiNote').textContent = r.ok ? 'TV on HDMI 1' : (s.error || 'Failed'); }
+  catch { $('hdmiNote').textContent = 'Failed'; }
+  finally { btn.disabled = false; }
+};
+const openSettings = () => { $('settingsPanel').classList.add('open'); loadAway(); $('hdmiNote').textContent = ''; };
 const closeSettings = () => $('settingsPanel').classList.remove('open');
 
 // ---- reset (!): back to a clean state after the page sat in the background while the talk went on
